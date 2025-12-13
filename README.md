@@ -1,174 +1,169 @@
-# Xray VLESS+WS+TLS / XHTTP Автоматический Установщик 🚀
+# Xray VLESS+WS+TLS / XHTTP Auto-Installer 🚀
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Простой и мощный Bash-скрипт для полностью автоматической установки и настройки VPN-сервера на базе **Xray** с использованием протокола **VLESS**.
+A simple and powerful Bash script for fully automated installation and configuration of a VPN server based on **Xray** using the **VLESS** protocol.
 
-Поддерживаются два режима работы входящего подключения:
+Supports three installation modes:
 
-- **VLESS + WS + TLS** на порту **443** с маскировкой под `google.com` (SNI/Host).
-- **VLESS + XHTTP + TLS** на порту **2053** с SNI/Host `google.com`.
+- **VLESS + WS + TLS** on port **443** with masquerading as `google.com` (SNI/Host)
+- **VLESS + XHTTP + TLS** on port **2053** with SNI/Host `google.com`
+- **BOTH MODES** simultaneously (ports 443 and 2053, shared UUID)
 
-Скрипт ориентирован на обеспечение **низкой задержки (low latency)** для онлайн-игр, стабильного соединения и обхода интернет-блокировок средней и повышенной сложности за счет использования современных транспортов Xray. [web:7][web:15]
+The script focuses on providing **low latency** for online gaming, stable connections, and bypassing moderate to advanced internet blocking through modern Xray transports.
 
-**Особенности:**
+**Features:**
 
-- ✨ **Полностью Автоматический:** Скрипт делает всё сам, от установки зависимостей до генерации конфигурации и перезапуска службы.
-- 🚀 **Оптимизация для Скорости и Игр:**
-  - VLESS (меньше оверхеда по сравнению с VMess).
-  - Выбор между WebSocket и XHTTP в интерактивном меню при запуске.
-  - Автоматически включает **TCP BBR** (если поддерживается ядром) для улучшения пропускной способности.
-- 🛡️ **Безопасность и Обход Блокировок:**
-  - TLS с самоподписанным сертификатом.
-  - Маскировка под HTTPS-трафик с доменом `google.com` через SNI/Host.
-  - Встроенный защищенный DNS (DoH от Cloudflare/Google/Quad9) внутри Xray. [web:8][web:19]
-- 💻 **Широкая Поддержка ОС:**
+- ✨ **Fully Automatic:** The script handles everything from dependency installation to configuration generation and service restart.
+- 🚀 **Speed & Gaming Optimized:**
+  - VLESS protocol (lower overhead compared to VMess)
+  - Choice between WebSocket and XHTTP in interactive menu at launch
+  - Automatically enables **TCP BBR** (if supported by kernel) for improved throughput
+- 🛡️ **Security & Blocking Circumvention:**
+  - TLS with self-signed certificate
+  - HTTPS traffic masquerading with `google.com` domain via SNI/Host
+  - Built-in secure DNS (DoH from Cloudflare/Google/Quad9) inside Xray
+- 💻 **Wide OS Support:**
   - Ubuntu 20.04+
   - Debian 10+
   - CentOS 7+ / AlmaLinux / Rocky Linux
-- 🔑 **Подключение по IP:** Не требует доменного имени. Идеально для быстрого развертывания на любом VPS.
-- ⚙️ **Простое Управление:** Интеграция с `systemd` для управления службой Xray (статус, перезапуск, логи).
-- 📱 **Удобный Вывод:** Генерирует готовую **VLESS-ссылку** и **QR-код** для легкого импорта в клиенты.
+- 🔑 **IP-based Connection:** No domain name required. Perfect for quick VPS deployment.
+- ⚙️ **Simple Management:** Integration with `systemd` for Xray service management (status, restart, logs).
+- 📱 **Convenient Output:** Generates ready-to-use **VLESS links** and **QR codes** for easy client import.
 
 ---
 
-## Требуется для установки
+## Requirements
 
-- Чистый VPS (Виртуальный Частный Сервер).
-- Поддерживаемая ОС (Ubuntu 20.04+, Debian 10+, CentOS 7+ / AlmaLinux / Rocky Linux).
-- Доступ к серверу по SSH с правами `root` или пользователя с `sudo`.
+- Clean VPS (Virtual Private Server)
+- Supported OS (Ubuntu 20.04+, Debian 10+, CentOS 7+ / AlmaLinux / Rocky Linux)
+- SSH access to server with `root` privileges or user with `sudo`
 
 ---
 
-## 🚀 Быстрый старт (ветка feature/xhttp-support)
+## 🚀 Quick Start
 
-1. Переключитесь на ветку с поддержкой XHTTP:
-   ```bash
-   git clone https://github.com/Nerve11/Auto-intall-Xray-VLESS-WS-TLS.git
-   cd Auto-intall-Xray-VLESS-WS-TLS
-   git checkout feature/xhttp-support
-   ```
-
-2. Скачайте скрипт с этой ветки:
+1. Download the installation script:
    ```bash
    wget -O install-vless.sh \
-     https://raw.githubusercontent.com/Nerve11/Auto-intall-Xray-VLESS-WS-TLS/feature/xhttp-support/install-vless.sh
-   # или
-   # curl -o install-vless.sh https://raw.githubusercontent.com/Nerve11/Auto-intall-Xray-VLESS-WS-TLS/feature/xhttp-support/install-vless.sh
+     https://raw.githubusercontent.com/Nerve11/Auto-intall-Xray-VLESS-WS-TLS/main/install-vless.sh
+   # or
+   # curl -o install-vless.sh https://raw.githubusercontent.com/Nerve11/Auto-intall-Xray-VLESS-WS-TLS/main/install-vless.sh
    ```
 
-3. Сделайте скрипт исполняемым:
+2. Make the script executable:
    ```bash
    chmod +x install-vless.sh
    ```
 
-4. Запустите скрипт с правами sudo:
+3. Run the script with sudo privileges:
    ```bash
    sudo ./install-vless.sh
    ```
 
-5. В интерактивном меню выберите режим установки:
-   - `1` – **VLESS + WS + TLS** на порту **443**.
-   - `2` – **VLESS + XHTTP + TLS** на порту **2053**.
+4. In the interactive menu, select installation mode:
+   - `1` – **VLESS + WS + TLS** on port **443**
+   - `2` – **VLESS + XHTTP + TLS** on port **2053**
+   - `3` – **BOTH MODES** (ports 443 and 2053, shared UUID)
 
-6. Дождитесь завершения! Скрипт выполнит все шаги и выведет итоговую информацию, включая VLESS-ссылку и путь WS (для режима WebSocket).
-
----
-
-## 🎉 После установки
-
-По завершении работы скрипта в консоль выводится:
-
-- **Параметры вашего VPN:** IP-адрес сервера, порт, UUID, режим (WS или XHTTP), путь WS (для режима WS).
-- **Готовая VLESS-ссылка:** Можно скопировать целиком и импортировать в клиент.
-- **Информация о QR-коде:** Файл `vless_qr.png` сохраняется в домашней директории пользователя, от имени которого выполнялся `sudo` (обычно `/root/` либо `/home/username/`).
+5. Wait for completion! The script will execute all steps and display summary information including VLESS link(s) and WS path (for WebSocket mode).
 
 ---
 
-## 📱 Настройка клиента
+## 🎉 After Installation
 
-1. **Импортируйте конфигурацию:**
-   - Используйте VLESS-ссылку или QR-код в вашем клиенте (v2rayNG, v2rayN, Nekoray, Shadowrocket и т.д.).
+Upon completion, the script outputs:
 
-2. **Разрешите небезопасное соединение:**
-   - Включите одну из опций в разделе TLS/Security:
+- **VPN parameters:** Server IP address, port(s), UUID, mode (WS/XHTTP/both), WS path (for WS mode)
+- **Ready-to-use VLESS link(s):** Can be copied entirely and imported into client
+- **QR code information:** File(s) `vless_ws_qr.png` and/or `vless_xhttp_qr.png` saved in the home directory of the user who ran `sudo` (usually `/root/` or `/home/username/`)
+
+---
+
+## 📱 Client Configuration
+
+1. **Import configuration:**
+   - Use VLESS link or QR code in your client (v2rayNG, v2rayN, Nekoray, Shadowrocket, etc.)
+
+2. **Allow insecure connection:**
+   - Enable one of these options in TLS/Security section:
      - `Allow Insecure`
      - `skip certificate verification`
      - `tlsAllowInsecure=1`
-   - Это необходимо, так как используется самоподписанный сертификат.
+   - This is required because a self-signed certificate is used.
 
-3. **Проверьте SNI / Host:**
-   - Для обоих режимов (WS и XHTTP) **SNI/Host должен быть `google.com`**.
-   - Адрес сервера в профиле клиента указывается как IP вашего VPS (или домен, если добавите свой).
+3. **Verify SNI / Host:**
+   - For both modes (WS and XHTTP) **SNI/Host must be `google.com`**
+   - Server address in client profile should be your VPS IP (or domain if you configure one)
 
-4. **Параметры транспорта:**
+4. **Transport parameters:**
 
-| Режим               | Порт | type   | path            | security | sni/Host   |
+| Mode                | Port | type   | path            | security | sni/Host   |
 |---------------------|------|--------|-----------------|----------|-----------|
 | VLESS + WS + TLS    | 443  | ws     | `/RANDOM_PATH`  | tls      | google.com|
-| VLESS + XHTTP + TLS | 2053 | xhttp  | (без path)      | tls      | google.com|
+| VLESS + XHTTP + TLS | 2053 | xhttp  | (no path)       | tls      | google.com|
 
-- Для XHTTP клиенты должны поддерживать транспорт XHTTP (современные версии v2rayNG/v2rayN/Nekoray). [web:15]
-
----
-
-## 🔧 Управление сервером Xray
-
-Стандартные команды `systemctl`:
-
-- Проверить статус: `sudo systemctl status xray`
-- Перезапустить: `sudo systemctl restart xray`
-- Остановить: `sudo systemctl stop xray`
-- Запустить: `sudo systemctl start xray`
-- Включить автозапуск: `sudo systemctl enable xray`
-- Выключить автозапуск: `sudo systemctl disable xray`
-
-**Просмотр логов:**
-
-- Ошибки: `sudo tail -f /var/log/xray/error.log`
-- Логи доступа (если включены): `sudo tail -f /var/log/xray/access.log`
-- Полный лог службы: `sudo journalctl -u xray -f --no-pager`
+- For XHTTP, clients must support the XHTTP transport (modern versions of v2rayNG/v2rayN/Nekoray)
 
 ---
 
-## ⚙️ Кастомизация
+## 🔧 Xray Server Management
 
-- **Порты:**
-  - По умолчанию: 443 для WS, 2053 для XHTTP.
-  - Можно изменить в начале скрипта (переменные `VLESS_PORT_WS` и `VLESS_PORT_XHTTP`) перед запуском.
-- **Дополнительная оптимизация:**
-  - Для тонкой настройки буферов и таймаутов редактируйте `/usr/local/etc/xray/config.json` после установки.
-  - Можно добавить секцию `"policy"` и настроить `bufferSize` и другие параметры. Требуется перезапуск Xray и тестирование. [web:19]
+Standard `systemctl` commands:
+
+- Check status: `sudo systemctl status xray`
+- Restart: `sudo systemctl restart xray`
+- Stop: `sudo systemctl stop xray`
+- Start: `sudo systemctl start xray`
+- Enable autostart: `sudo systemctl enable xray`
+- Disable autostart: `sudo systemctl disable xray`
+
+**View logs:**
+
+- Errors: `sudo tail -f /var/log/xray/error.log`
+- Access logs (if enabled): `sudo tail -f /var/log/xray/access.log`
+- Full service log: `sudo journalctl -u xray -f --no-pager`
 
 ---
 
-## 🔍 Устранение неполадок
+## ⚙️ Customization
 
-- **Служба Xray не запускается:**
+- **Ports:**
+  - Default: 443 for WS, 2053 for XHTTP
+  - Can be changed at the beginning of the script (variables `VLESS_PORT_WS` and `VLESS_PORT_XHTTP`) before running
+- **Additional optimization:**
+  - For fine-tuning buffers and timeouts, edit `/usr/local/etc/xray/config.json` after installation
+  - You can add a `"policy"` section and configure `bufferSize` and other parameters. Requires Xray restart and testing.
+
+---
+
+## 🔍 Troubleshooting
+
+- **Xray service won't start:**
   - `sudo journalctl -u xray -n 50 --no-pager`
-  - Проверить занятость порта: `sudo ss -tlpn | grep <PORT>`
-  - Проверить конфиг: `sudo /usr/local/bin/xray -test -config /usr/local/etc/xray/config.json`
+  - Check if port is occupied: `sudo ss -tlpn | grep <PORT>`
+  - Validate config: `sudo /usr/local/bin/xray -test -config /usr/local/etc/xray/config.json`
 
-- **Низкая скорость:**
-  - Убедитесь, что включён BBR: `sysctl net.ipv4.tcp_congestion_control` должно показать `bbr`.
-  - Проверьте скорость на самом сервере (`speedtest-cli`).
-  - Проверьте маршрут и потери пакетов (`mtr` / `WinMTR`).
-  - Посмотрите загрузку CPU (`htop`).
+- **Low speed:**
+  - Ensure BBR is enabled: `sysctl net.ipv4.tcp_congestion_control` should show `bbr`
+  - Check server speed itself (`speedtest-cli`)
+  - Check route and packet loss (`mtr` / `WinMTR`)
+  - Monitor CPU load (`htop`)
 
-- **Клиент не подключается:**
-  - Проверьте, что включен `Allow Insecure`.
-  - Убедитесь, что **SNI/Host = google.com**.
-  - Проверьте правила firewall (UFW / firewalld) на порту 443 или 2053 в зависимости от режима.
-
----
-
-## 🔒 Безопасность
-
-- Используется самоподписанный сертификат, поэтому клиент доверяет сертификату не через цепочку CA, а напрямую.
-- Для максимально «натурального» HTTPS-трафика рекомендуется в продвинутых сценариях использовать свой домен и/или более сложные конфигурации (REALITY, CDN и т.д.), но данный скрипт фокусируется на быстром развёртывании и маскировке под `google.com` через SNI. [web:11][web:15]
+- **Client won't connect:**
+  - Verify `Allow Insecure` is enabled
+  - Ensure **SNI/Host = google.com**
+  - Check firewall rules (UFW / firewalld) on port 443 or 2053 depending on mode
 
 ---
 
-## 📜 Лицензия
+## 🔒 Security
 
-Проект лицензирован под MIT. См. файл `LICENSE`.
+- Uses self-signed certificate, so the client trusts the certificate directly rather than through CA chain
+- For maximum "natural" HTTPS traffic, advanced scenarios recommend using your own domain and/or more complex configurations (REALITY, CDN, etc.), but this script focuses on quick deployment and masquerading as `google.com` via SNI
+
+---
+
+## 📜 License
+
+Project is licensed under MIT. See `LICENSE` file.
