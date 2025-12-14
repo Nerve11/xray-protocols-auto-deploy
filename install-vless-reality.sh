@@ -216,16 +216,45 @@ log_info "Generated UUID: ${USER_UUID}"
 # Generate x25519 keys
 log_info "Generating x25519 key pair for REALITY..."
 
-KEYS_OUTPUT=$(xray x25519)
+# Run xray x25519 and capture output
+KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
 if [[ -z "$KEYS_OUTPUT" ]]; then
-    log_error "Failed to generate x25519 keys."
+    log_error "Failed to generate x25519 keys - no output from xray x25519."
 fi
 
-PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep "Private key:" | awk '{print $3}')
-PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep "Public key:" | awk '{print $3}')
+log_info "x25519 output received. Parsing keys..."
 
+# Try multiple parsing methods
+PRIVATE_KEY=""
+PUBLIC_KEY=""
+
+# Method 1: Standard format with "Private key:" and "Public key:"
+if [[ -z "$PRIVATE_KEY" ]]; then
+    PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Private key:" | awk '{print $3}')
+fi
+
+if [[ -z "$PUBLIC_KEY" ]]; then
+    PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Public key:" | awk '{print $3}')
+fi
+
+# Method 2: Direct extraction (some versions output without labels)
 if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    log_error "Failed to extract x25519 keys."
+    # Extract base64-like strings (44 characters typical for x25519)
+    KEYS_ARRAY=($(echo "$KEYS_OUTPUT" | grep -oE '[A-Za-z0-9+/]{43}='))
+    if [[ ${#KEYS_ARRAY[@]} -ge 2 ]]; then
+        PRIVATE_KEY="${KEYS_ARRAY[0]}"
+        PUBLIC_KEY="${KEYS_ARRAY[1]}"
+    fi
+fi
+
+# Validate keys
+if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
+    log_error "Failed to extract x25519 keys. Debug output:\n${KEYS_OUTPUT}"
+fi
+
+# Validate key format (should be 44 chars base64)
+if [[ ${#PRIVATE_KEY} -ne 44 || ${#PUBLIC_KEY} -ne 44 ]]; then
+    log_error "Invalid x25519 key format. Private: ${#PRIVATE_KEY} chars, Public: ${#PUBLIC_KEY} chars. Expected 44 each."
 fi
 
 log_info "Private key: ${PRIVATE_KEY}"
@@ -460,7 +489,7 @@ if [[ "$QR_GENERATED" = true ]]; then
 fi
 
 echo -e "${BYellow}Client Configuration:${Color_Off}"
-echo -e "  1. Use clients: v2rayN (Windows), v2rayNG (Android), Nekoray (Desktop)"
+echo -e "  1. Use clients: v2rayN (Windows), v2rayNG (Android), Nekoray (Desktop), Happ"
 echo -e "  2. Import the VLESS link or scan QR code"
 echo -e "  3. Ensure client supports REALITY and XTLS Vision"
 echo -e "  4. Server address: ${SERVER_IP}:${VLESS_PORT}"
