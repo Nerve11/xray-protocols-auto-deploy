@@ -107,7 +107,7 @@ fi
 
 log_info "Starting VLESS + REALITY + Vision installation..."
 
-set -eu
+set -e
 
 # OS detection and dependency installation
 log_info "Detecting operating system and installing dependencies..."
@@ -213,62 +213,60 @@ fi
 
 log_info "Generated UUID: ${USER_UUID}"
 
-# Generate x25519 keys
+# Generate x25519 keys (disable strict mode temporarily)
+set +e
+
 log_info "Generating x25519 key pair for REALITY..."
 
 # Run xray x25519 and capture output
 KEYS_OUTPUT=$(/usr/local/bin/xray x25519 2>&1)
-if [[ -z "$KEYS_OUTPUT" ]]; then
-    log_error "Failed to generate x25519 keys - no output from xray x25519."
+KEYS_EXIT_CODE=$?
+
+if [[ $KEYS_EXIT_CODE -ne 0 || -z "$KEYS_OUTPUT" ]]; then
+    log_error "Failed to generate x25519 keys - xray x25519 returned error code $KEYS_EXIT_CODE"
 fi
 
 log_info "x25519 output received. Parsing keys..."
 
-# Try multiple parsing methods
+# Initialize variables
 PRIVATE_KEY=""
 PUBLIC_KEY=""
 
 # Method 1: New format (Xray 25.12.8+) - PrivateKey/Password
-if [[ -z "$PRIVATE_KEY" ]]; then
-    PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -i "PrivateKey:" | awk '{print $2}')
-fi
-
-if [[ -z "$PUBLIC_KEY" ]]; then
-    # In new format, Password field is the public key
-    PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Password:" | awk '{print $2}')
-fi
+PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^PrivateKey:" | awk '{print $2}' | tr -d '\r\n')
+PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -E "^Password:" | awk '{print $2}' | tr -d '\r\n')
 
 # Method 2: Old format - "Private key:" and "Public key:"
 if [[ -z "$PRIVATE_KEY" ]]; then
-    PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Private key:" | awk '{print $3}')
+    PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -iE "Private key:" | awk '{print $3}' | tr -d '\r\n')
 fi
 
 if [[ -z "$PUBLIC_KEY" ]]; then
-    PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Public key:" | awk '{print $3}')
+    PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -iE "Public key:" | awk '{print $3}' | tr -d '\r\n')
 fi
 
-# Method 3: Direct extraction (some versions output without labels)
+# Validate keys were extracted
 if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    # Extract base64-like strings (43 characters + = typical for x25519)
-    KEYS_ARRAY=($(echo "$KEYS_OUTPUT" | grep -oE '[A-Za-z0-9_-]{43}'))
-    if [[ ${#KEYS_ARRAY[@]} -ge 2 ]]; then
-        PRIVATE_KEY="${KEYS_ARRAY[0]}"
-        PUBLIC_KEY="${KEYS_ARRAY[1]}"
-    fi
-fi
-
-# Validate keys
-if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    log_error "Failed to extract x25519 keys. Debug output:\n${KEYS_OUTPUT}"
+    echo -e "${BRed}[ERROR] Failed to extract x25519 keys.${Color_Off}"
+    echo -e "${BYellow}Debug output:${Color_Off}"
+    echo "$KEYS_OUTPUT"
+    exit 1
 fi
 
 # Validate key format (should be 43 chars base64url)
 if [[ ${#PRIVATE_KEY} -lt 40 || ${#PUBLIC_KEY} -lt 40 ]]; then
-    log_error "Invalid x25519 key format. Private: ${#PRIVATE_KEY} chars, Public: ${#PUBLIC_KEY} chars. Expected ~43 each."
+    echo -e "${BRed}[ERROR] Invalid x25519 key format.${Color_Off}"
+    echo -e "Private: ${#PRIVATE_KEY} chars, Public: ${#PUBLIC_KEY} chars. Expected ~43 each."
+    echo -e "Private Key: $PRIVATE_KEY"
+    echo -e "Public Key: $PUBLIC_KEY"
+    exit 1
 fi
 
 log_info "Private key: ${PRIVATE_KEY}"
 log_info "Public key: ${PUBLIC_KEY}"
+
+# Re-enable strict mode
+set -e
 
 # Generate shortId
 SHORT_ID=$(openssl rand -hex 8)
@@ -536,5 +534,4 @@ echo ""
 
 log_info "Installation complete. Maximum security achieved!"
 
-set +eu
 exit 0
