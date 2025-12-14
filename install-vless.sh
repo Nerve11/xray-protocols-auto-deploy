@@ -1,13 +1,13 @@
 #!/bin/bash
 # ==================================================
-# Xray Auto-Install Script (VLESS + WS + TLS / VLESS + XHTTP)
+# Xray Auto-Install Script (VLESS + WS / VLESS + XHTTP)
 # Supported: Ubuntu 20.04+, Debian 10+, CentOS 7+
-# Features: Self-signed certificate, port 443 for WS+TLS, port 2053 for XHTTP, SNI google.com.
-# Includes automatic TCP BBR enablement for speed optimization.
+# Features: No self-signed certificates, configurable SNI (google.com/yandex.ru)
+# TCP BBR optimization included
 # ==================================================
 
 # Installation mode: ws, xhttp or both
-INSTALL_MODE="ws" # default WS+TLS
+INSTALL_MODE="ws" # default WS
 
 # Configuration variables
 VLESS_PORT_WS=443
@@ -15,9 +15,6 @@ VLESS_PORT_XHTTP=2053
 WS_PATH="/$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 12)"
 LOG_DIR="/var/log/xray"
 CONFIG_DIR="/usr/local/etc/xray"
-CERT_DIR="/usr/local/etc/xray/certs"
-CERT_FILE="${CERT_DIR}/server.crt"
-KEY_FILE="${CERT_DIR}/server.key"
 
 # Helper functions
 Color_Off='\033[0m'
@@ -35,25 +32,42 @@ if [[ "$EUID" -ne 0 ]]; then
   log_error "This script must be run as root (sudo)."
 fi
 
+# SNI selection
+echo -e "${BCyan}Select SNI for masking:${Color_Off}"
+echo "  1 - google.com (recommended)"
+echo "  2 - yandex.ru"
+read -rp "Enter number [1/2]: " SNI_CHOICE
+
+case "$SNI_CHOICE" in
+  2)
+    SNI_HOST="yandex.ru"
+    ;;
+  *)
+    SNI_HOST="google.com"
+    ;;
+esac
+
+log_info "Selected SNI: ${SNI_HOST}"
+
 # Installation mode selection
 echo -e "${BCyan}Select installation mode:${Color_Off}"
-echo "  1 - VLESS + WS + TLS (port 443, SNI google.com)"
-echo "  2 - VLESS + XHTTP (port 2053, SNI google.com)"
+echo "  1 - VLESS + WS (port 443, SNI ${SNI_HOST})"
+echo "  2 - VLESS + XHTTP (port 2053, SNI ${SNI_HOST})"
 echo "  3 - BOTH MODES (ports 443 and 2053, shared UUID)"
 read -rp "Enter number [1/2/3]: " MODE_CHOICE
 
 case "$MODE_CHOICE" in
   2)
     INSTALL_MODE="xhttp"
-    log_info "Selected mode: VLESS + XHTTP (port ${VLESS_PORT_XHTTP}, SNI google.com)"
+    log_info "Selected mode: VLESS + XHTTP (port ${VLESS_PORT_XHTTP}, SNI ${SNI_HOST})"
     ;;
   3)
     INSTALL_MODE="both"
-    log_info "Selected mode: VLESS + WS + XHTTP (ports ${VLESS_PORT_WS} and ${VLESS_PORT_XHTTP}, SNI google.com)"
+    log_info "Selected mode: VLESS + WS + XHTTP (ports ${VLESS_PORT_WS} and ${VLESS_PORT_XHTTP}, SNI ${SNI_HOST})"
     ;;
   *)
     INSTALL_MODE="ws"
-    log_info "Selected mode: VLESS + WS + TLS (port ${VLESS_PORT_WS}, SNI google.com)"
+    log_info "Selected mode: VLESS + WS (port ${VLESS_PORT_WS}, SNI ${SNI_HOST})"
     ;;
 esac
 
@@ -121,7 +135,7 @@ case $OS in
     ubuntu|debian|linuxmint|pop|neon)
         log_info "Detected Debian/Ubuntu. Installing packages..."
         apt update -y || log_error "Failed to update package list."
-        apt install -y curl wget unzip socat qrencode jq coreutils openssl bash-completion || log_error "Failed to install dependencies."
+        apt install -y curl wget unzip socat qrencode jq coreutils bash-completion || log_error "Failed to install dependencies."
         ;;
     centos|almalinux|rocky|rhel|fedora)
         log_info "Detected RHEL/CentOS. Installing packages..."
@@ -134,13 +148,13 @@ case $OS in
         fi
         if command -v dnf &> /dev/null; then
             dnf update -y || log_warn "Failed to update via dnf."
-            dnf install -y curl wget unzip socat qrencode jq coreutils openssl bash-completion policycoreutils-python-utils util-linux || log_error "Failed to install dependencies."
+            dnf install -y curl wget unzip socat qrencode jq coreutils bash-completion policycoreutils-python-utils util-linux || log_error "Failed to install dependencies."
         else
             yum update -y || log_warn "Failed to update via yum."
             if [[ "$OS" == "centos" ]] && [[ "${MAJOR_VERSION:-}" == "7" ]]; then
-                yum install -y curl wget unzip socat qrencode jq coreutils openssl bash-completion policycoreutils-python util-linux || log_error "Failed to install dependencies."
+                yum install -y curl wget unzip socat qrencode jq coreutils bash-completion policycoreutils-python util-linux || log_error "Failed to install dependencies."
             else
-                yum install -y curl wget unzip socat qrencode jq coreutils openssl bash-completion policycoreutils-python-utils util-linux || log_error "Failed to install dependencies."
+                yum install -y curl wget unzip socat qrencode jq coreutils bash-completion policycoreutils-python-utils util-linux || log_error "Failed to install dependencies."
             fi
         fi
         ;;
@@ -240,8 +254,8 @@ else
     log_warn "UFW/firewalld not found. Open ports manually: $PORTS_TO_OPEN"
 fi
 
-# Generate TLS certificate
-log_info "Generating self-signed TLS certificate..."
+# Get server IP
+log_info "Determining server public IP address..."
 
 SERVER_IP=$(curl -s4 https://ipinfo.io/ip || curl -s4 https://api.ipify.org || curl -s4 https://ifconfig.me)
 
@@ -250,29 +264,6 @@ if [[ -z "$SERVER_IP" ]]; then
 fi
 
 log_info "Server public IP: $SERVER_IP"
-
-mkdir -p "$CERT_DIR"
-
-if ! openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout "$KEY_FILE" \
-    -out "$CERT_FILE" \
-    -days 3650 \
-    -subj "/CN=${SERVER_IP}" \
-    -addext "subjectAltName = IP:${SERVER_IP}"; then
-    log_error "Failed to generate TLS certificate."
-fi
-
-if [[ ! -f "$CERT_FILE" || ! -f "$KEY_FILE" ]]; then
-    log_error "TLS certificate files not found after generation."
-fi
-
-log_info "TLS certificate generated for IP: $SERVER_IP"
-
-chmod 644 "$CERT_FILE"
-chgrp nobody "$KEY_FILE" 2>/dev/null || chgrp nogroup "$KEY_FILE" 2>/dev/null || log_warn "Failed to change key file group."
-chmod 640 "$KEY_FILE"
-
-log_info "Certificate file permissions set."
 
 # Create Xray configuration
 log_info "Creating Xray configuration: ${CONFIG_DIR}/config.json..."
@@ -291,14 +282,11 @@ if [[ "$INSTALL_MODE" == "ws" ]]; then
   },
   "dns": {
     "servers": [
-      "https://1.1.1.1/dns-query",
-      "https://8.8.8.8/dns-query",
-      "https://9.9.9.9/dns-query",
-      "1.1.1.1",
-      "8.8.8.8",
+      "https+local://1.1.1.1/dns-query",
+      "https+local://8.8.8.8/dns-query",
       "localhost"
     ],
-    "queryStrategy": "UseIP"
+    "queryStrategy": "UseIPv4"
   },
   "inbounds": [
     {
@@ -307,42 +295,34 @@ if [[ "$INSTALL_MODE" == "ws" ]]; then
       "settings": {
         "clients": [
           {
-            "id": "${USER_UUID}"
+            "id": "${USER_UUID}",
+            "flow": ""
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-          "alpn": ["http/1.1"],
-          "minVersion": "1.3",
-          "serverName": "google.com",
-          "certificates": [
-            {
-              "certificateFile": "${CERT_FILE}",
-              "keyFile": "${KEY_FILE}"
-            }
-          ]
-        },
+        "security": "none",
         "wsSettings": {
           "path": "${WS_PATH}",
           "headers": {
-            "Host": "google.com"
+            "Host": "${SNI_HOST}"
           }
         }
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls", "fakedns"]
+        "destOverride": ["http", "tls", "quic", "fakedns"]
       }
     }
   ],
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {},
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     },
     {
@@ -356,9 +336,13 @@ if [[ "$INSTALL_MODE" == "ws" ]]; then
     "rules": [
       {
         "type": "field",
-        "port": 53,
-        "network": "udp",
-        "outboundTag": "direct"
+        "ip": ["geoip:private"],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "block"
       }
     ]
   }
@@ -374,14 +358,11 @@ elif [[ "$INSTALL_MODE" == "xhttp" ]]; then
   },
   "dns": {
     "servers": [
-      "https://1.1.1.1/dns-query",
-      "https://8.8.8.8/dns-query",
-      "https://9.9.9.9/dns-query",
-      "1.1.1.1",
-      "8.8.8.8",
+      "https+local://1.1.1.1/dns-query",
+      "https+local://8.8.8.8/dns-query",
       "localhost"
     ],
-    "queryStrategy": "UseIP"
+    "queryStrategy": "UseIPv4"
   },
   "inbounds": [
     {
@@ -390,39 +371,33 @@ elif [[ "$INSTALL_MODE" == "xhttp" ]]; then
       "settings": {
         "clients": [
           {
-            "id": "${USER_UUID}"
+            "id": "${USER_UUID}",
+            "flow": ""
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "xhttp",
-        "security": "tls",
-        "tlsSettings": {
-          "alpn": ["h2", "http/1.1"],
-          "serverName": "google.com",
-          "minVersion": "1.2",
-          "certificates": [
-            {
-              "certificateFile": "${CERT_FILE}",
-              "keyFile": "${KEY_FILE}"
-            }
-          ]
-        },
+        "security": "none",
         "xhttpSettings": {
-          "mode": "stream-one"
+          "mode": "stream-one",
+          "host": "${SNI_HOST}",
+          "path": "/"
         }
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls", "fakedns"]
+        "destOverride": ["http", "tls", "quic", "fakedns"]
       }
     }
   ],
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {},
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     },
     {
@@ -436,9 +411,13 @@ elif [[ "$INSTALL_MODE" == "xhttp" ]]; then
     "rules": [
       {
         "type": "field",
-        "port": 53,
-        "network": "udp",
-        "outboundTag": "direct"
+        "ip": ["geoip:private"],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "block"
       }
     ]
   }
@@ -455,14 +434,11 @@ else
   },
   "dns": {
     "servers": [
-      "https://1.1.1.1/dns-query",
-      "https://8.8.8.8/dns-query",
-      "https://9.9.9.9/dns-query",
-      "1.1.1.1",
-      "8.8.8.8",
+      "https+local://1.1.1.1/dns-query",
+      "https+local://8.8.8.8/dns-query",
       "localhost"
     ],
-    "queryStrategy": "UseIP"
+    "queryStrategy": "UseIPv4"
   },
   "inbounds": [
     {
@@ -471,35 +447,25 @@ else
       "settings": {
         "clients": [
           {
-            "id": "${USER_UUID}"
+            "id": "${USER_UUID}",
+            "flow": ""
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "ws",
-        "security": "tls",
-        "tlsSettings": {
-          "alpn": ["http/1.1"],
-          "minVersion": "1.3",
-          "serverName": "google.com",
-          "certificates": [
-            {
-              "certificateFile": "${CERT_FILE}",
-              "keyFile": "${KEY_FILE}"
-            }
-          ]
-        },
+        "security": "none",
         "wsSettings": {
           "path": "${WS_PATH}",
           "headers": {
-            "Host": "google.com"
+            "Host": "${SNI_HOST}"
           }
         }
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls", "fakedns"]
+        "destOverride": ["http", "tls", "quic", "fakedns"]
       }
     },
     {
@@ -508,39 +474,33 @@ else
       "settings": {
         "clients": [
           {
-            "id": "${USER_UUID}"
+            "id": "${USER_UUID}",
+            "flow": ""
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "xhttp",
-        "security": "tls",
-        "tlsSettings": {
-          "alpn": ["h2", "http/1.1"],
-          "serverName": "google.com",
-          "minVersion": "1.2",
-          "certificates": [
-            {
-              "certificateFile": "${CERT_FILE}",
-              "keyFile": "${KEY_FILE}"
-            }
-          ]
-        },
+        "security": "none",
         "xhttpSettings": {
-          "mode": "stream-one"
+          "mode": "stream-one",
+          "host": "${SNI_HOST}",
+          "path": "/"
         }
       },
       "sniffing": {
         "enabled": true,
-        "destOverride": ["http", "tls", "fakedns"]
+        "destOverride": ["http", "tls", "quic", "fakedns"]
       }
     }
   ],
   "outbounds": [
     {
       "protocol": "freedom",
-      "settings": {},
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      },
       "tag": "direct"
     },
     {
@@ -554,9 +514,13 @@ else
     "rules": [
       {
         "type": "field",
-        "port": 53,
-        "network": "udp",
-        "outboundTag": "direct"
+        "ip": ["geoip:private"],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "protocol": ["bittorrent"],
+        "outboundTag": "block"
       }
     ]
   }
@@ -603,8 +567,8 @@ if [[ -z "$WS_PATH_ENCODED" ]]; then
     log_error "Failed to URL-encode WS path."
 fi
 
-VLESS_LINK_WS="vless://${USER_UUID}@${SERVER_IP}:${VLESS_PORT_WS}?type=ws&path=${WS_PATH_ENCODED}&security=tls&sni=google.com&allowInsecure=1#VLESS-WS-TLS-google.com"
-VLESS_LINK_XHTTP="vless://${USER_UUID}@${SERVER_IP}:${VLESS_PORT_XHTTP}?type=xhttp&security=tls&sni=google.com&alpn=h2&allowInsecure=1#VLESS-XHTTP-google.com"
+VLESS_LINK_WS="vless://${USER_UUID}@${SERVER_IP}:${VLESS_PORT_WS}?type=ws&path=${WS_PATH_ENCODED}&host=${SNI_HOST}&security=none#VLESS-WS-${SNI_HOST}"
+VLESS_LINK_XHTTP="vless://${USER_UUID}@${SERVER_IP}:${VLESS_PORT_XHTTP}?type=xhttp&host=${SNI_HOST}&path=%2F&security=none#VLESS-XHTTP-${SNI_HOST}"
 
 QR_WS_GENERATED=false
 QR_XHTTP_GENERATED=false
@@ -654,13 +618,13 @@ log_info "=================================================="
 
 echo -e "${BYellow}Server IP address:${Color_Off} ${SERVER_IP}"
 echo -e "${BYellow}UUID (shared):${Color_Off} ${USER_UUID}"
-echo -e "${BYellow}SNI/Host:${Color_Off} google.com"
-echo -e "${BYellow}Encryption:${Color_Off} TLS (self-signed certificate)"
+echo -e "${BYellow}SNI/Host:${Color_Off} ${SNI_HOST}"
+echo -e "${BYellow}Security:${Color_Off} none (no TLS)"
 echo -e "${BYellow}TCP BBR:${Color_Off} enabled"
 echo ""
 
 if [[ "$INSTALL_MODE" == "ws" ]]; then
-  echo -e "${BGreen}=== VLESS + WS + TLS ===${Color_Off}"
+  echo -e "${BGreen}=== VLESS + WS ===${Color_Off}"
   echo -e "${BYellow}Port:${Color_Off} ${VLESS_PORT_WS}"
   echo -e "${BYellow}WS Path:${Color_Off} ${WS_PATH}"
   echo ""
@@ -685,7 +649,7 @@ elif [[ "$INSTALL_MODE" == "xhttp" ]]; then
       echo ""
   fi
 else
-  echo -e "${BGreen}=== VLESS + WS + TLS (Port ${VLESS_PORT_WS}) ===${Color_Off}"
+  echo -e "${BGreen}=== VLESS + WS (Port ${VLESS_PORT_WS}) ===${Color_Off}"
   echo -e "${BYellow}WS Path:${Color_Off} ${WS_PATH}"
   echo ""
   echo -e "${BGreen}WS Link:${Color_Off}"
@@ -709,12 +673,11 @@ else
   fi
 fi
 
-echo -e "${BYellow}IMPORTANT - Client Configuration:${Color_Off}"
-echo -e "  1. Import the link or QR code into your client."
-echo -e "  2. ${BRed}REQUIRED:${Color_Off} Enable '${BRed}Allow Insecure${Color_Off}' option"
-echo -e "     (Allow Insecure / skip cert verify / tlsAllowInsecure=1)."
-echo -e "  3. Ensure SNI/Host = ${BRed}google.com${Color_Off}"
-echo -e "  4. Server address = Your VPS public IP (or domain if configured)."
+echo -e "${BYellow}Client Configuration:${Color_Off}"
+echo -e "  1. Import the link or QR code into your VLESS client"
+echo -e "  2. Verify Host/SNI: ${BRed}${SNI_HOST}${Color_Off}"
+echo -e "  3. Security mode: ${BRed}none${Color_Off} (no TLS/certificates)"
+echo -e "  4. Server address: ${SERVER_IP}"
 echo ""
 
 echo -e "${BCyan}--- Xray Service Management ---${Color_Off}"
@@ -730,7 +693,7 @@ echo -e "Access:  ${BYellow}tail -f ${LOG_DIR}/access.log${Color_Off}"
 echo -e "systemd: ${BYellow}journalctl -u xray --output cat -f${Color_Off}"
 echo ""
 
-log_info "Installation complete. Enjoy!"
+log_info "Installation complete. Stay secure!"
 
 set +eu
 exit 0
