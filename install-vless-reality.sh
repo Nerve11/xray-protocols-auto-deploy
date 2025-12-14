@@ -228,7 +228,17 @@ log_info "x25519 output received. Parsing keys..."
 PRIVATE_KEY=""
 PUBLIC_KEY=""
 
-# Method 1: Standard format with "Private key:" and "Public key:"
+# Method 1: New format (Xray 25.12.8+) - PrivateKey/Password
+if [[ -z "$PRIVATE_KEY" ]]; then
+    PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -i "PrivateKey:" | awk '{print $2}')
+fi
+
+if [[ -z "$PUBLIC_KEY" ]]; then
+    # In new format, Password field is the public key
+    PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Password:" | awk '{print $2}')
+fi
+
+# Method 2: Old format - "Private key:" and "Public key:"
 if [[ -z "$PRIVATE_KEY" ]]; then
     PRIVATE_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Private key:" | awk '{print $3}')
 fi
@@ -237,10 +247,10 @@ if [[ -z "$PUBLIC_KEY" ]]; then
     PUBLIC_KEY=$(echo "$KEYS_OUTPUT" | grep -i "Public key:" | awk '{print $3}')
 fi
 
-# Method 2: Direct extraction (some versions output without labels)
+# Method 3: Direct extraction (some versions output without labels)
 if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    # Extract base64-like strings (44 characters typical for x25519)
-    KEYS_ARRAY=($(echo "$KEYS_OUTPUT" | grep -oE '[A-Za-z0-9+/]{43}='))
+    # Extract base64-like strings (43 characters + = typical for x25519)
+    KEYS_ARRAY=($(echo "$KEYS_OUTPUT" | grep -oE '[A-Za-z0-9_-]{43}'))
     if [[ ${#KEYS_ARRAY[@]} -ge 2 ]]; then
         PRIVATE_KEY="${KEYS_ARRAY[0]}"
         PUBLIC_KEY="${KEYS_ARRAY[1]}"
@@ -252,9 +262,9 @@ if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
     log_error "Failed to extract x25519 keys. Debug output:\n${KEYS_OUTPUT}"
 fi
 
-# Validate key format (should be 44 chars base64)
-if [[ ${#PRIVATE_KEY} -ne 44 || ${#PUBLIC_KEY} -ne 44 ]]; then
-    log_error "Invalid x25519 key format. Private: ${#PRIVATE_KEY} chars, Public: ${#PUBLIC_KEY} chars. Expected 44 each."
+# Validate key format (should be 43 chars base64url)
+if [[ ${#PRIVATE_KEY} -lt 40 || ${#PUBLIC_KEY} -lt 40 ]]; then
+    log_error "Invalid x25519 key format. Private: ${#PRIVATE_KEY} chars, Public: ${#PUBLIC_KEY} chars. Expected ~43 each."
 fi
 
 log_info "Private key: ${PRIVATE_KEY}"
