@@ -385,10 +385,7 @@ elif [[ "$INSTALL_MODE" == "xhttp" ]]; then
           "host": "${SNI_HOST}",
           "path": "",
           "extra": {
-            "xPaddingBytes": {
-              "min": 10,
-              "max": 50
-            }
+            "xPaddingBytes": "10-50"
           }
         }
       },
@@ -494,10 +491,7 @@ else
           "host": "${SNI_HOST}",
           "path": "",
           "extra": {
-            "xPaddingBytes": {
-              "min": 10,
-              "max": 50
-            }
+            "xPaddingBytes": "10-50"
           }
         }
       },
