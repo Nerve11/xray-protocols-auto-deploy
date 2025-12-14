@@ -27,6 +27,23 @@ if [[ "$EUID" -ne 0 ]]; then
   log_error "This script must be run as root (sudo)."
 fi
 
+# Auto-update selection
+echo -e "${BCyan}Enable automatic Xray updates?${Color_Off}"
+echo "  1 - Yes (check for updates every 2 days and auto-install)"
+echo "  2 - No (manual updates only)"
+read -rp "Enter number [1/2]: " AUTO_UPDATE_CHOICE
+
+case "$AUTO_UPDATE_CHOICE" in
+  1)
+    ENABLE_AUTO_UPDATE=true
+    log_info "Auto-update will be enabled"
+    ;;
+  *)
+    ENABLE_AUTO_UPDATE=false
+    log_info "Auto-update disabled. Update manually when needed."
+    ;;
+esac
+
 # Camouflage SNI selection
 echo -e "${BCyan}Select camouflage website (SNI):${Color_Off}"
 echo "  1 - www.microsoft.com (recommended - OCSP stapling)"
@@ -204,6 +221,51 @@ if ! command -v xray &> /dev/null; then
 fi
 
 log_info "Xray installed: $(xray version | head -n 1)"
+
+# Setup auto-update if enabled
+if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+    log_info "Setting up automatic updates..."
+    
+    # Download auto-update script
+    if wget -O /usr/local/bin/xray-auto-update.sh \
+        https://raw.githubusercontent.com/Nerve11/Xray-Vless-auto-Deploy/main/xray-auto-update.sh; then
+        chmod +x /usr/local/bin/xray-auto-update.sh
+        log_info "Auto-update script installed"
+    else
+        log_warn "Failed to download auto-update script. Skipping auto-update setup."
+        ENABLE_AUTO_UPDATE=false
+    fi
+    
+    if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+        # Download systemd service
+        if wget -O /etc/systemd/system/xray-auto-update.service \
+            https://raw.githubusercontent.com/Nerve11/Xray-Vless-auto-Deploy/main/systemd/xray-auto-update.service; then
+            log_info "Auto-update service installed"
+        else
+            log_warn "Failed to download service file"
+            ENABLE_AUTO_UPDATE=false
+        fi
+    fi
+    
+    if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+        # Download systemd timer
+        if wget -O /etc/systemd/system/xray-auto-update.timer \
+            https://raw.githubusercontent.com/Nerve11/Xray-Vless-auto-Deploy/main/systemd/xray-auto-update.timer; then
+            log_info "Auto-update timer installed"
+        else
+            log_warn "Failed to download timer file"
+            ENABLE_AUTO_UPDATE=false
+        fi
+    fi
+    
+    if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+        # Enable and start timer
+        systemctl daemon-reload
+        systemctl enable xray-auto-update.timer
+        systemctl start xray-auto-update.timer
+        log_info "Auto-update enabled. Xray will check for updates every 2 days."
+    fi
+fi
 
 # Generate UUID
 USER_UUID=$(xray uuid)
@@ -484,6 +546,9 @@ echo -e "${BYellow}Fingerprint:${Color_Off} ${FINGERPRINT}"
 echo -e "${BYellow}Public Key:${Color_Off} ${PUBLIC_KEY}"
 echo -e "${BYellow}Short ID:${Color_Off} ${SHORT_ID}"
 echo -e "${BYellow}TCP BBR:${Color_Off} enabled"
+if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+    echo -e "${BYellow}Auto-update:${Color_Off} enabled (checks every 2 days)"
+fi
 echo ""
 
 echo -e "${BGreen}VLESS Link:${Color_Off}"
@@ -518,6 +583,14 @@ echo -e "Restart:   ${BYellow}systemctl restart xray${Color_Off}"
 echo -e "Stop:      ${BYellow}systemctl stop xray${Color_Off}"
 echo -e "Auto-start:${BYellow}systemctl enable xray${Color_Off}"
 echo ""
+
+if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
+    echo -e "${BCyan}--- Auto-Update Management ---${Color_Off}"
+    echo -e "Check status: ${BYellow}systemctl status xray-auto-update.timer${Color_Off}"
+    echo -e "View log:     ${BYellow}tail -f /var/log/xray/auto-update.log${Color_Off}"
+    echo -e "Disable:      ${BYellow}systemctl stop xray-auto-update.timer && systemctl disable xray-auto-update.timer${Color_Off}"
+    echo ""
+fi
 
 echo -e "${BCyan}--- Xray Logs ---${Color_Off}"
 echo -e "Errors:  ${BYellow}tail -f ${LOG_DIR}/error.log${Color_Off}"
