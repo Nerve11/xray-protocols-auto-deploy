@@ -10,6 +10,7 @@
 VLESS_PORT=443
 LOG_DIR="/var/log/xray"
 CONFIG_DIR="/usr/local/etc/xray"
+BBR_CONF="/etc/sysctl.d/99-bbr.conf"
 
 # Helper functions
 Color_Off='\033[0m'
@@ -21,11 +22,186 @@ BCyan='\033[1;36m'
 log_info() { echo -e "${BCyan}[INFO] $1${Color_Off}"; }
 log_warn() { echo -e "${BYellow}[WARN] $1${Color_Off}"; }
 log_error() { echo -e "${BRed}[ERROR] $1${Color_Off}"; exit 1; }
+log_success() { echo -e "${BGreen}[SUCCESS] $1${Color_Off}"; }
 
 # Check for root privileges
 if [[ "$EUID" -ne 0 ]]; then
   log_error "This script must be run as root (sudo)."
 fi
+
+# ==================================================
+# UNINSTALL FUNCTION
+# ==================================================
+uninstall_xray() {
+    log_info "=================================================="
+    log_info " Starting Complete Xray Removal"
+    log_info "=================================================="
+    echo ""
+    
+    echo -e "${BYellow}WARNING: This will completely remove Xray and all related configurations!${Color_Off}"
+    echo -e "${BRed}All VPN profiles (including REALITY keys) will be deleted permanently.${Color_Off}"
+    echo ""
+    read -rp "Are you sure you want to continue? (yes/no): " CONFIRM_UNINSTALL
+    
+    if [[ "$CONFIRM_UNINSTALL" != "yes" ]]; then
+        log_info "Uninstallation cancelled."
+        exit 0
+    fi
+    
+    log_info "Beginning uninstallation process..."
+    
+    # Stop and disable Xray service
+    if systemctl is-active --quiet xray; then
+        log_info "Stopping Xray service..."
+        systemctl stop xray || log_warn "Failed to stop xray service"
+    fi
+    
+    if systemctl is-enabled --quiet xray 2>/dev/null; then
+        log_info "Disabling Xray service..."
+        systemctl disable xray || log_warn "Failed to disable xray service"
+    fi
+    
+    # Stop and disable auto-update timer
+    if systemctl is-active --quiet xray-auto-update.timer 2>/dev/null; then
+        log_info "Stopping auto-update timer..."
+        systemctl stop xray-auto-update.timer || log_warn "Failed to stop auto-update timer"
+    fi
+    
+    if systemctl is-enabled --quiet xray-auto-update.timer 2>/dev/null; then
+        log_info "Disabling auto-update timer..."
+        systemctl disable xray-auto-update.timer || log_warn "Failed to disable auto-update timer"
+    fi
+    
+    # Remove systemd files
+    log_info "Removing systemd service files..."
+    rm -f /etc/systemd/system/xray.service
+    rm -f /etc/systemd/system/xray@.service
+    rm -f /etc/systemd/system/xray-auto-update.service
+    rm -f /etc/systemd/system/xray-auto-update.timer
+    rm -f /etc/systemd/system/xray.service.d/10-donot_touch_single_conf.conf
+    rm -rf /etc/systemd/system/xray.service.d
+    
+    systemctl daemon-reload
+    
+    # Remove Xray binary and scripts
+    log_info "Removing Xray binaries and scripts..."
+    rm -f /usr/local/bin/xray
+    rm -f /usr/local/bin/xray-auto-update.sh
+    rm -f /usr/bin/xray
+    
+    # Remove configurations
+    log_info "Removing Xray configurations (including REALITY keys)..."
+    rm -rf "$CONFIG_DIR"
+    
+    # Remove logs
+    log_info "Removing Xray logs..."
+    rm -rf "$LOG_DIR"
+    
+    # Remove geoip/geosite data
+    log_info "Removing geodata files..."
+    rm -f /usr/local/share/xray/geoip.dat
+    rm -f /usr/local/share/xray/geosite.dat
+    rm -rf /usr/local/share/xray
+    
+    # Remove QR codes
+    log_info "Removing QR code files..."
+    if [[ -n "$SUDO_USER" ]]; then
+        USER_HOME=$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)
+        if [[ -n "$USER_HOME" ]]; then
+            rm -f "${USER_HOME}/vless_reality_qr.png"
+        fi
+    fi
+    rm -f /root/vless_reality_qr.png
+    
+    # Firewall cleanup
+    log_info "Cleaning up firewall rules..."
+    
+    if command -v ufw &> /dev/null; then
+        log_info "Removing UFW rule for port ${VLESS_PORT}..."
+        ufw delete allow ${VLESS_PORT}/tcp 2>/dev/null || log_warn "Failed to remove UFW rule for port ${VLESS_PORT}"
+        if ufw status | grep -qw active; then
+            ufw reload || log_warn "Failed to reload UFW"
+        fi
+    fi
+    
+    if command -v firewall-cmd &> /dev/null; then
+        log_info "Removing firewalld rule for port ${VLESS_PORT}..."
+        firewall-cmd --permanent --remove-port=${VLESS_PORT}/tcp 2>/dev/null || log_warn "Failed to remove firewalld rule for port ${VLESS_PORT}"
+        if systemctl is-active --quiet firewalld; then
+            firewall-cmd --reload || log_warn "Failed to reload firewalld"
+        fi
+        
+        # SELinux cleanup
+        if [[ -f /usr/sbin/sestatus ]] && sestatus | grep "SELinux status:" | grep -q "enabled"; then
+            if command -v semanage &> /dev/null; then
+                log_info "Cleaning up SELinux port rules..."
+                semanage port -d -t http_port_t -p tcp ${VLESS_PORT} 2>/dev/null || log_warn "SELinux cleanup for port ${VLESS_PORT} failed"
+            fi
+        fi
+    fi
+    
+    # BBR cleanup option
+    echo ""
+    echo -e "${BYellow}Do you want to remove TCP BBR configuration?${Color_Off}"
+    echo "This will restore default TCP congestion control."
+    read -rp "Remove BBR settings? (yes/no): " REMOVE_BBR
+    
+    if [[ "$REMOVE_BBR" == "yes" ]]; then
+        log_info "Removing BBR configuration..."
+        rm -f "$BBR_CONF"
+        sysctl -w net.ipv4.tcp_congestion_control=cubic >/dev/null 2>&1 || log_warn "Failed to reset TCP congestion control"
+        sysctl -w net.core.default_qdisc=pfifo_fast >/dev/null 2>&1 || log_warn "Failed to reset default qdisc"
+        log_success "BBR configuration removed"
+    else
+        log_info "Keeping BBR configuration"
+    fi
+    
+    echo ""
+    log_success "=================================================="
+    log_success " Xray Completely Removed"
+    log_success "=================================================="
+    echo -e "${BGreen}All Xray components have been removed:${Color_Off}"
+    echo -e "  ${BGreen}✓${Color_Off} Service stopped and disabled"
+    echo -e "  ${BGreen}✓${Color_Off} Binaries deleted"
+    echo -e "  ${BGreen}✓${Color_Off} Configurations removed (including REALITY keys)"
+    echo -e "  ${BGreen}✓${Color_Off} Logs cleared"
+    echo -e "  ${BGreen}✓${Color_Off} Firewall rules cleaned"
+    if [[ "$REMOVE_BBR" == "yes" ]]; then
+        echo -e "  ${BGreen}✓${Color_Off} BBR configuration removed"
+    fi
+    echo ""
+    log_info "Server is clean. You can now reinstall or use for other purposes."
+    exit 0
+}
+
+# ==================================================
+# MAIN MENU
+# ==================================================
+echo -e "${BCyan}=================================================="
+echo -e " Xray VLESS+REALITY Installer/Uninstaller"
+echo -e "==================================================${Color_Off}"
+echo ""
+echo "Select action:"
+echo "  1 - Install Xray (VLESS + REALITY + Vision)"
+echo "  2 - Complete Removal (uninstall Xray)"
+echo ""
+read -rp "Enter number [1/2]: " MAIN_CHOICE
+
+case "$MAIN_CHOICE" in
+    2)
+        uninstall_xray
+        ;;
+    1)
+        log_info "Starting installation..."
+        ;;
+    *)
+        log_error "Invalid choice. Exiting."
+        ;;
+esac
+
+# ==================================================
+# INSTALLATION PROCESS
+# ==================================================
 
 # Auto-update selection
 echo -e "${BCyan}Enable automatic Xray updates?${Color_Off}"
@@ -192,8 +368,6 @@ log_info "Dependencies installed successfully."
 
 # Enable TCP BBR
 log_info "Enabling TCP BBR for network speed optimization..."
-
-BBR_CONF="/etc/sysctl.d/99-bbr.conf"
 
 if ! grep -q "net.core.default_qdisc=fq" "$BBR_CONF" 2>/dev/null ; then
     echo "net.core.default_qdisc=fq" | tee "$BBR_CONF" > /dev/null
@@ -591,6 +765,10 @@ if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
     echo -e "Disable:      ${BYellow}systemctl stop xray-auto-update.timer && systemctl disable xray-auto-update.timer${Color_Off}"
     echo ""
 fi
+
+echo -e "${BCyan}--- Uninstall ---${Color_Off}"
+echo -e "Complete removal: ${BYellow}sudo bash install-vless-reality.sh${Color_Off} → Select option 2"
+echo ""
 
 echo -e "${BCyan}--- Xray Logs ---${Color_Off}"
 echo -e "Errors:  ${BYellow}tail -f ${LOG_DIR}/error.log${Color_Off}"
