@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Xray Dashboard - VPN Management</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            primary: { 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca' },
+            success: { 500: '#10b981', 600: '#059669' },
+            danger: { 500: '#ef4444', 600: '#dc2626' },
+            dark: { 800: '#1f2937', 900: '#111827' }
+          },
+          animation: {
+            'fade-in': 'fadeIn 0.3s ease-in-out',
+            'slide-in': 'slideIn 0.3s ease-out'
+          },
+          keyframes: {
+            fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+            slideIn: { '0%': { transform: 'translateY(-10px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+  </style>
+</head>
+<body class="bg-dark-900 text-gray-100 antialiased">
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+  <!-- Main Container -->
+  <div class="min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="bg-dark-800 border-b border-gray-700">
+      <div class="container mx-auto px-4 py-4">
+        <div class="flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <svg class="w-8 h-8 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path>
+            </svg>
+            <h1 class="text-2xl font-bold">Xray Dashboard</h1>
+          </div>
+          <div class="flex items-center gap-4">
+            <span id="server-ip" class="text-sm text-gray-400">Loading...</span>
+            <div id="connection-status" class="flex items-center gap-2">
+              <div class="w-2 h-2 rounded-full bg-gray-500 animate-pulse"></div>
+              <span class="text-xs text-gray-400">Connecting...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Stats Section -->
+    <section class="bg-dark-800 border-b border-gray-700">
+      <div class="container mx-auto px-4 py-6">
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4" id="stats-grid">
+          <!-- Stats cards will be injected here -->
+        </div>
+      </div>
+    </section>
+
+    <!-- Main Content -->
+    <main class="flex-1 container mx-auto px-4 py-8">
+      <!-- Add Profile Form -->
+      <section class="bg-dark-800 rounded-lg border border-gray-700 p-6 mb-8 animate-fade-in">
+        <h2 class="text-xl font-semibold mb-4 flex items-center gap-2">
+          <svg class="w-5 h-5 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+          </svg>
+          Create New Profile
+        </h2>
+        <form id="create-profile-form" class="flex flex-col sm:flex-row gap-4">
+          <input 
+            type="text" 
+            id="email-input" 
+            placeholder="user@example.com" 
+            required
+            class="flex-1 px-4 py-2.5 bg-dark-900 border border-gray-600 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent outline-none transition"
+          >
+          <button 
+            type="submit"
+            class="px-6 py-2.5 bg-primary-600 hover:bg-primary-700 rounded-lg font-medium transition focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-dark-800"
+          >
+            Add Profile
+          </button>
+        </form>
+      </section>
+
+      <!-- Profiles List -->
+      <section class="bg-dark-800 rounded-lg border border-gray-700 p-6 animate-fade-in" style="animation-delay: 0.1s">
+        <div class="flex items-center justify-between mb-6">
+          <h2 class="text-xl font-semibold flex items-center gap-2">
+            <svg class="w-5 h-5 text-primary-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+            </svg>
+            Active Profiles
+            <span id="profile-count" class="text-sm font-normal text-gray-400">(0)</span>
+          </h2>
+          <button 
+            id="refresh-btn"
+            class="px-3 py-1.5 text-sm bg-gray-700 hover:bg-gray-600 rounded-lg transition flex items-center gap-2"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+            </svg>
+            Refresh
+          </button>
+        </div>
+        
+        <div id="profiles-list" class="space-y-4">
+          <!-- Profiles will be injected here -->
+        </div>
+        
+        <div id="empty-state" class="text-center py-12 text-gray-500 hidden">
+          <svg class="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+          </svg>
+          <p class="text-lg font-medium">No profiles yet</p>
+          <p class="text-sm mt-2">Create your first VPN profile to get started</p>
+        </div>
+      </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-dark-800 border-t border-gray-700 mt-auto">
+      <div class="container mx-auto px-4 py-4">
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-gray-400">
+          <p>Xray Dashboard v1.0.0 | VLESS + REALITY</p>
+          <div class="flex gap-4">
+            <a href="/api/docs" target="_blank" class="hover:text-primary-500 transition">API Docs</a>
+            <a href="https://github.com/Nerve11/Xray-Vless-auto-Deploy" target="_blank" class="hover:text-primary-500 transition">GitHub</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- QR Code Modal -->
+  <div id="qr-modal" class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+    <div class="bg-dark-800 rounded-lg border border-gray-700 p-6 max-w-md w-full animate-slide-in">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold">QR Code</h3>
+        <button id="close-modal" class="text-gray-400 hover:text-gray-200 transition">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+          </svg>
+        </button>
+      </div>
+      <div id="qr-content" class="flex justify-center">
+        <!-- QR code image will be inserted here -->
+      </div>
+      <p class="text-sm text-gray-400 text-center mt-4">Scan with your VPN client</p>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/assets/js/api.js"></script>
+  <script src="/assets/js/utils.js"></script>
+  <script src="/assets/js/app.js"></script>
+</body>
+</html>
