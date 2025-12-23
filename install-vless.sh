@@ -4,6 +4,7 @@
 # Supported: Ubuntu 20.04+, Debian 10+, CentOS 7+
 # Features: No self-signed certificates, configurable SNI (google.com/yandex.ru)
 # TCP BBR optimization included
+# Profile Management via systemd
 # ==================================================
 
 # Configuration variables
@@ -19,6 +20,7 @@ BGreen='\033[1;32m'
 BYellow='\033[1;33m'
 BRed='\033[1;31m'
 BCyan='\033[1;36m'
+BBlue='\033[1;34m'
 
 log_info() { echo -e "${BCyan}[INFO] $1${Color_Off}"; }
 log_warn() { echo -e "${BYellow}[WARN] $1${Color_Off}"; }
@@ -31,11 +33,215 @@ if [[ "$EUID" -ne 0 ]]; then
 fi
 
 # ==================================================
+# PROFILE MANAGEMENT FUNCTIONS
+# ==================================================
+
+# List all profiles
+list_profiles() {
+    log_info "=================================================="
+    log_info " Current Xray Profiles"
+    log_info "=================================================="
+    echo ""
+    
+    if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
+        log_warn "Configuration file not found. Xray may not be installed."
+        return 1
+    fi
+    
+    # Extract all UUIDs from config
+    PROFILE_COUNT=$(jq '.inbounds[].settings.clients | length' "${CONFIG_DIR}/config.json" 2>/dev/null | awk '{sum+=$1} END {print sum}')
+    
+    if [[ -z "$PROFILE_COUNT" || "$PROFILE_COUNT" == "0" ]]; then
+        echo -e "${BYellow}No profiles found in configuration.${Color_Off}"
+        return 1
+    fi
+    
+    echo -e "${BGreen}Total profiles: ${PROFILE_COUNT}${Color_Off}"
+    echo ""
+    
+    # List all UUIDs
+    local counter=1
+    jq -r '.inbounds[] | .protocol as $proto | .port as $port | .settings.clients[] | "\($proto):\($port):\(.id)"' "${CONFIG_DIR}/config.json" 2>/dev/null | while IFS=: read -r proto port uuid; do
+        echo -e "${BBlue}[$counter]${Color_Off} Protocol: ${BCyan}${proto}${Color_Off} | Port: ${BYellow}${port}${Color_Off}"
+        echo -e "    UUID: ${BGreen}${uuid}${Color_Off}"
+        echo ""
+        ((counter++))
+    done
+    
+    return 0
+}
+
+# Add new profile
+add_profile() {
+    log_info "=================================================="
+    log_info " Add New Profile"
+    log_info "=================================================="
+    echo ""
+    
+    if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
+        log_error "Configuration file not found. Install Xray first."
+    fi
+    
+    # Generate new UUID
+    NEW_UUID=$(xray uuid)
+    if [[ -z "$NEW_UUID" ]]; then
+        log_error "Failed to generate UUID."
+    fi
+    
+    echo -e "${BGreen}Generated new UUID:${Color_Off} ${NEW_UUID}"
+    echo ""
+    
+    # Backup current config
+    cp "${CONFIG_DIR}/config.json" "${CONFIG_DIR}/config.json.backup.$(date +%s)"
+    log_info "Configuration backed up"
+    
+    # Add UUID to all inbounds
+    jq --arg uuid "$NEW_UUID" '.inbounds[].settings.clients += [{"id": $uuid, "flow": ""}]' \
+        "${CONFIG_DIR}/config.json" > "${CONFIG_DIR}/config.json.tmp"
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to update configuration"
+    fi
+    
+    mv "${CONFIG_DIR}/config.json.tmp" "${CONFIG_DIR}/config.json"
+    
+    # Validate configuration
+    if ! /usr/local/bin/xray -test -config "${CONFIG_DIR}/config.json" >/dev/null 2>&1; then
+        log_error "Configuration validation failed. Restoring backup."
+        mv "${CONFIG_DIR}/config.json.backup."* "${CONFIG_DIR}/config.json" 2>/dev/null
+    fi
+    
+    # Restart Xray service via systemd
+    log_info "Restarting Xray service..."
+    systemctl restart xray || log_error "Failed to restart Xray service"
+    
+    sleep 2
+    
+    if ! systemctl is-active --quiet xray; then
+        log_error "Xray service failed to start after adding profile"
+    fi
+    
+    # Get server IP
+    SERVER_IP=$(curl -s4 https://ipinfo.io/ip || curl -s4 https://api.ipify.org)
+    
+    # Get SNI from config
+    SNI_HOST=$(jq -r '.inbounds[0].streamSettings.wsSettings.headers.Host // .inbounds[0].streamSettings.xhttpSettings.host // "google.com"' "${CONFIG_DIR}/config.json")
+    
+    # Generate VLESS links
+    echo ""
+    log_success "Profile added successfully!"
+    echo ""
+    echo -e "${BGreen}New UUID:${Color_Off} ${NEW_UUID}"
+    echo -e "${BYellow}Server IP:${Color_Off} ${SERVER_IP}"
+    echo ""
+    
+    # Check which protocols are configured
+    HAS_WS=$(jq -r '.inbounds[] | select(.streamSettings.network == "ws") | .port' "${CONFIG_DIR}/config.json")
+    HAS_XHTTP=$(jq -r '.inbounds[] | select(.streamSettings.network == "xhttp") | .port' "${CONFIG_DIR}/config.json")
+    
+    if [[ -n "$HAS_WS" ]]; then
+        WS_PATH=$(jq -r '.inbounds[] | select(.streamSettings.network == "ws") | .streamSettings.wsSettings.path' "${CONFIG_DIR}/config.json")
+        WS_PATH_ENCODED=$(printf %s "$WS_PATH" | jq -sRr @uri)
+        VLESS_LINK_WS="vless://${NEW_UUID}@${SERVER_IP}:${HAS_WS}?type=ws&path=${WS_PATH_ENCODED}&host=${SNI_HOST}&security=none#VLESS-WS-${SNI_HOST}-NEW"
+        
+        echo -e "${BGreen}=== VLESS + WS ===${Color_Off}"
+        echo -e "${VLESS_LINK_WS}"
+        echo ""
+    fi
+    
+    if [[ -n "$HAS_XHTTP" ]]; then
+        VLESS_LINK_XHTTP="vless://${NEW_UUID}@${SERVER_IP}:${HAS_XHTTP}?type=xhttp&host=${SNI_HOST}&path=&security=none&mode=packet-up#VLESS-XHTTP-${SNI_HOST}-NEW"
+        
+        echo -e "${BGreen}=== VLESS + XHTTP ===${Color_Off}"
+        echo -e "${VLESS_LINK_XHTTP}"
+        echo ""
+    fi
+    
+    log_info "Import these links in your VLESS client"
+}
+
+# Remove profile
+remove_profile() {
+    log_info "=================================================="
+    log_info " Remove Profile"
+    log_info "=================================================="
+    echo ""
+    
+    if [[ ! -f "${CONFIG_DIR}/config.json" ]]; then
+        log_error "Configuration file not found."
+    fi
+    
+    # Show current profiles
+    list_profiles
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "No profiles to remove"
+    fi
+    
+    echo ""
+    echo -e "${BYellow}Enter UUID to remove (copy-paste from list above):${Color_Off}"
+    read -rp "UUID: " UUID_TO_REMOVE
+    
+    if [[ -z "$UUID_TO_REMOVE" ]]; then
+        log_error "UUID cannot be empty"
+    fi
+    
+    # Check if UUID exists
+    UUID_EXISTS=$(jq --arg uuid "$UUID_TO_REMOVE" '.inbounds[].settings.clients[] | select(.id == $uuid) | .id' "${CONFIG_DIR}/config.json")
+    
+    if [[ -z "$UUID_EXISTS" ]]; then
+        log_error "UUID not found in configuration"
+    fi
+    
+    # Confirm deletion
+    echo ""
+    echo -e "${BRed}WARNING: This will permanently remove the profile!${Color_Off}"
+    read -rp "Are you sure? (yes/no): " CONFIRM_DELETE
+    
+    if [[ "$CONFIRM_DELETE" != "yes" ]]; then
+        log_info "Deletion cancelled"
+        return 0
+    fi
+    
+    # Backup config
+    cp "${CONFIG_DIR}/config.json" "${CONFIG_DIR}/config.json.backup.$(date +%s)"
+    
+    # Remove UUID from all inbounds
+    jq --arg uuid "$UUID_TO_REMOVE" '.inbounds[].settings.clients |= map(select(.id != $uuid))' \
+        "${CONFIG_DIR}/config.json" > "${CONFIG_DIR}/config.json.tmp"
+    
+    if [[ $? -ne 0 ]]; then
+        log_error "Failed to update configuration"
+    fi
+    
+    mv "${CONFIG_DIR}/config.json.tmp" "${CONFIG_DIR}/config.json"
+    
+    # Validate configuration
+    if ! /usr/local/bin/xray -test -config "${CONFIG_DIR}/config.json" >/dev/null 2>&1; then
+        log_error "Configuration validation failed. Restoring backup."
+        mv "${CONFIG_DIR}/config.json.backup."* "${CONFIG_DIR}/config.json" 2>/dev/null
+    fi
+    
+    # Restart Xray service via systemd
+    log_info "Restarting Xray service..."
+    systemctl restart xray || log_error "Failed to restart Xray service"
+    
+    sleep 2
+    
+    if ! systemctl is-active --quiet xray; then
+        log_error "Xray service failed to start after removing profile"
+    fi
+    
+    log_success "Profile removed successfully!"
+    echo -e "${BGreen}UUID ${UUID_TO_REMOVE} has been deleted${Color_Off}"
+}
+
+# ==================================================
 # UNINSTALL FUNCTION
 # ==================================================
 uninstall_xray() {
     log_info "=================================================="
-    log_info " Starting Complete Xray Removal"
+    log_info " Starting Complete Xray Removal (via systemd)"
     log_info "=================================================="
     echo ""
     
@@ -51,25 +257,25 @@ uninstall_xray() {
     
     log_info "Beginning uninstallation process..."
     
-    # Stop and disable Xray service
+    # Stop and disable Xray service via systemd
     if systemctl is-active --quiet xray; then
-        log_info "Stopping Xray service..."
+        log_info "Stopping Xray service via systemd..."
         systemctl stop xray || log_warn "Failed to stop xray service"
     fi
     
     if systemctl is-enabled --quiet xray 2>/dev/null; then
-        log_info "Disabling Xray service..."
+        log_info "Disabling Xray service via systemd..."
         systemctl disable xray || log_warn "Failed to disable xray service"
     fi
     
     # Stop and disable auto-update timer
     if systemctl is-active --quiet xray-auto-update.timer 2>/dev/null; then
-        log_info "Stopping auto-update timer..."
+        log_info "Stopping auto-update timer via systemd..."
         systemctl stop xray-auto-update.timer || log_warn "Failed to stop auto-update timer"
     fi
     
     if systemctl is-enabled --quiet xray-auto-update.timer 2>/dev/null; then
-        log_info "Disabling auto-update timer..."
+        log_info "Disabling auto-update timer via systemd..."
         systemctl disable xray-auto-update.timer || log_warn "Failed to disable auto-update timer"
     fi
     
@@ -164,10 +370,10 @@ uninstall_xray() {
     
     echo ""
     log_success "=================================================="
-    log_success " Xray Completely Removed"
+    log_success " Xray Completely Removed via systemd"
     log_success "=================================================="
     echo -e "${BGreen}All Xray components have been removed:${Color_Off}"
-    echo -e "  ${BGreen}✓${Color_Off} Service stopped and disabled"
+    echo -e "  ${BGreen}✓${Color_Off} Service stopped and disabled via systemd"
     echo -e "  ${BGreen}✓${Color_Off} Binaries deleted"
     echo -e "  ${BGreen}✓${Color_Off} Configurations removed"
     echo -e "  ${BGreen}✓${Color_Off} Logs cleared"
@@ -183,27 +389,115 @@ uninstall_xray() {
 # ==================================================
 # MAIN MENU
 # ==================================================
-echo -e "${BCyan}=================================================="
-echo -e " Xray VLESS Installer/Uninstaller"
-echo -e "==================================================${Color_Off}"
-echo ""
-echo "Select action:"
-echo "  1 - Install Xray (VLESS + WS / XHTTP)"
-echo "  2 - Complete Removal (uninstall Xray)"
-echo ""
-read -rp "Enter number [1/2]: " MAIN_CHOICE
+show_main_menu() {
+    echo -e "${BCyan}=================================================="
+    echo -e " Xray VLESS Manager (systemd integration)"
+    echo -e "==================================================${Color_Off}"
+    echo ""
+    echo "Select action:"
+    echo "  ${BGreen}1${Color_Off} - Install Xray (VLESS + WS / XHTTP)"
+    echo "  ${BYellow}2${Color_Off} - Manage Profiles (add/remove users)"
+    echo "  ${BRed}3${Color_Off} - Complete Removal (uninstall Xray)"
+    echo "  ${BCyan}4${Color_Off} - Show Service Status (systemd)"
+    echo "  ${BBlue}5${Color_Off} - Exit"
+    echo ""
+    read -rp "Enter number [1-5]: " MAIN_CHOICE
+    echo ""
+}
 
-case "$MAIN_CHOICE" in
-    2)
-        uninstall_xray
-        ;;
-    1)
-        log_info "Starting installation..."
-        ;;
-    *)
-        log_error "Invalid choice. Exiting."
-        ;;
-esac
+# Profile management submenu
+show_profile_menu() {
+    while true; do
+        echo -e "${BCyan}=================================================="
+        echo -e " Profile Management"
+        echo -e "==================================================${Color_Off}"
+        echo ""
+        echo "Select action:"
+        echo "  ${BGreen}1${Color_Off} - List all profiles"
+        echo "  ${BYellow}2${Color_Off} - Add new profile (UUID)"
+        echo "  ${BRed}3${Color_Off} - Remove profile (UUID)"
+        echo "  ${BBlue}4${Color_Off} - Back to main menu"
+        echo ""
+        read -rp "Enter number [1-4]: " PROFILE_CHOICE
+        echo ""
+        
+        case "$PROFILE_CHOICE" in
+            1)
+                list_profiles
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            2)
+                add_profile
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            3)
+                remove_profile
+                echo ""
+                read -rp "Press Enter to continue..."
+                ;;
+            4)
+                return 0
+                ;;
+            *)
+                log_warn "Invalid choice. Try again."
+                ;;
+        esac
+    done
+}
+
+# Show systemd service status
+show_service_status() {
+    log_info "=================================================="
+    log_info " Xray Service Status (systemd)"
+    log_info "=================================================="
+    echo ""
+    
+    if systemctl list-unit-files | grep -q "^xray.service"; then
+        systemctl status xray --no-pager -l
+        echo ""
+        echo -e "${BCyan}--- Auto-update Timer Status ---${Color_Off}"
+        if systemctl list-unit-files | grep -q "^xray-auto-update.timer"; then
+            systemctl status xray-auto-update.timer --no-pager -l
+        else
+            echo -e "${BYellow}Auto-update timer not configured${Color_Off}"
+        fi
+    else
+        log_warn "Xray service not found. Install Xray first."
+    fi
+    
+    echo ""
+}
+
+# Main menu loop
+while true; do
+    show_main_menu
+    
+    case "$MAIN_CHOICE" in
+        1)
+            log_info "Starting installation..."
+            break
+            ;;
+        2)
+            show_profile_menu
+            ;;
+        3)
+            uninstall_xray
+            ;;
+        4)
+            show_service_status
+            read -rp "Press Enter to continue..."
+            ;;
+        5)
+            log_info "Exiting..."
+            exit 0
+            ;;
+        *)
+            log_warn "Invalid choice. Try again."
+            ;;
+    esac
+done
 
 # ==================================================
 # INSTALLATION PROCESS
@@ -395,7 +689,7 @@ log_info "Xray installed: $(xray version | head -n 1)"
 
 # Setup auto-update if enabled
 if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
-    log_info "Setting up automatic updates..."
+    log_info "Setting up automatic updates via systemd..."
     
     # Download auto-update script
     if wget -O /usr/local/bin/xray-auto-update.sh \
@@ -434,7 +728,7 @@ if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
         systemctl daemon-reload
         systemctl enable xray-auto-update.timer
         systemctl start xray-auto-update.timer
-        log_info "Auto-update enabled. Xray will check for updates every 2 days."
+        log_info "Auto-update enabled via systemd. Xray will check for updates every 2 days."
     fi
 fi
 
@@ -799,7 +1093,7 @@ if ! systemctl is-active --quiet xray; then
     log_error "Xray service failed to start. Check logs: journalctl -u xray -n 50 or ${LOG_DIR}/error.log"
 fi
 
-log_info "Xray service started successfully."
+log_info "Xray service started successfully via systemd."
 
 # Generate VLESS links and QR codes
 log_info "Generating VLESS links and QR codes..."
@@ -869,7 +1163,7 @@ echo -e "${BYellow}SNI/Host:${Color_Off} ${SNI_HOST}"
 echo -e "${BYellow}Security:${Color_Off} none (no TLS)"
 echo -e "${BYellow}TCP BBR:${Color_Off} enabled"
 if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
-    echo -e "${BYellow}Auto-update:${Color_Off} enabled (checks every 2 days)"
+    echo -e "${BYellow}Auto-update:${Color_Off} enabled via systemd (checks every 2 days)"
 fi
 echo ""
 
@@ -937,23 +1231,29 @@ if [[ "$INSTALL_MODE" == "xhttp" || "$INSTALL_MODE" == "both" ]]; then
 fi
 echo ""
 
-echo -e "${BCyan}--- Xray Service Management ---${Color_Off}"
-echo -e "Status:    ${BYellow}systemctl status xray${Color_Off}"
-echo -e "Restart:   ${BYellow}systemctl restart xray${Color_Off}"
-echo -e "Stop:      ${BYellow}systemctl stop xray${Color_Off}"
-echo -e "Auto-start:${BYellow}systemctl enable xray${Color_Off}"
+echo -e "${BCyan}--- Xray Service Management (systemd) ---${Color_Off}"
+echo -e "Status:       ${BYellow}systemctl status xray${Color_Off}"
+echo -e "Restart:      ${BYellow}systemctl restart xray${Color_Off}"
+echo -e "Stop:         ${BYellow}systemctl stop xray${Color_Off}"
+echo -e "Auto-start:   ${BYellow}systemctl enable xray${Color_Off}"
+echo -e "View logs:    ${BYellow}journalctl -u xray -f${Color_Off}"
+echo ""
+
+echo -e "${BCyan}--- Profile Management ---${Color_Off}"
+echo -e "Run script again: ${BYellow}sudo bash install-vless.sh${Color_Off}"
+echo -e "Select option 2 for profile management"
 echo ""
 
 if [[ "$ENABLE_AUTO_UPDATE" = true ]]; then
-    echo -e "${BCyan}--- Auto-Update Management ---${Color_Off}"
+    echo -e "${BCyan}--- Auto-Update Management (systemd) ---${Color_Off}"
     echo -e "Check status: ${BYellow}systemctl status xray-auto-update.timer${Color_Off}"
     echo -e "View log:     ${BYellow}tail -f /var/log/xray/auto-update.log${Color_Off}"
     echo -e "Disable:      ${BYellow}systemctl stop xray-auto-update.timer && systemctl disable xray-auto-update.timer${Color_Off}"
     echo ""
 fi
 
-echo -e "${BCyan}--- Uninstall ---${Color_Off}"
-echo -e "Complete removal: ${BYellow}sudo bash install-vless.sh${Color_Off} → Select option 2"
+echo -e "${BCyan}--- Complete Removal ---${Color_Off}"
+echo -e "Uninstall: ${BYellow}sudo bash install-vless.sh${Color_Off} → Select option 3"
 echo ""
 
 echo -e "${BCyan}--- Xray Logs ---${Color_Off}"
