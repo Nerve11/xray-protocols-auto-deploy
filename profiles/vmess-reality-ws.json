@@ -1,0 +1,11 @@
+{
+  "id": "vmess-reality-ws",
+  "protocol": "vmess",
+  "transport": "ws",
+  "security": "reality",
+  "defaults": {
+    "server_port": 443,
+    "ws_path": "/"
+  }
+}
+

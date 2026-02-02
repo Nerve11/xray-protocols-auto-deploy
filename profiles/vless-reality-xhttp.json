@@ -1,0 +1,11 @@
+{
+  "id": "vless-reality-xhttp",
+  "protocol": "vless",
+  "transport": "xhttp",
+  "security": "reality",
+  "defaults": {
+    "server_port": 443,
+    "flow": "xtls-rprx-vision"
+  }
+}
+

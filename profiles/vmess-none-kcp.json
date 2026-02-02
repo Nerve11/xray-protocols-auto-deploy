@@ -1,0 +1,10 @@
+{
+  "id": "vmess-none-kcp",
+  "protocol": "vmess",
+  "transport": "kcp",
+  "security": "none",
+  "defaults": {
+    "server_port": 30000
+  }
+}
+

@@ -1,506 +1,469 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ========================================
-# Xray-Core VPN Auto Installer
-# Поддержка: VLESS, VLESS-Reality, XHTTP
-# ========================================
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-set -e
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
 
-# Цвета для вывода
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Не найдено в PATH: $1"
+}
 
-# Логирование
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+is_root() {
+  [ "${EUID:-$(id -u)}" -eq 0 ]
+}
 
-# Проверка root прав
-if [[ $EUID -ne 0 ]]; then
-   log_error "Этот скрипт должен быть запущен от root"
-   exit 1
-fi
-
-# Определение OS
-if [ -f /etc/os-release ]; then
+read_os_release() {
+  if [ -f /etc/os-release ]; then
     . /etc/os-release
-    OS=$ID
-    VER=$VERSION_ID
-else
-    log_error "Не удалось определить операционную систему"
-    exit 1
-fi
-
-log_info "Обнаружена ОС: $OS $VER"
-
-# ========================================
-# Функции установки
-# ========================================
-
-install_dependencies() {
-    log_info "Установка зависимостей..."
-    
-    case $OS in
-        ubuntu|debian)
-            apt-get update -qq
-            apt-get install -y curl wget unzip jq qrencode openssl uuid-runtime >/dev/null 2>&1
-            ;;
-        centos|rhel|fedora|rocky|almalinux)
-            yum install -y epel-release >/dev/null 2>&1
-            yum install -y curl wget unzip jq qrencode openssl util-linux >/dev/null 2>&1
-            ;;
-        *)
-            log_error "Неподдерживаемая ОС: $OS"
-            exit 1
-            ;;
-    esac
-    
-    log_success "Зависимости установлены"
+    echo "${ID:-}|${VERSION_ID:-}"
+    return 0
+  fi
+  echo "|"
 }
 
-install_xray() {
-    log_info "Установка Xray-core..."
-    
-    # Скачиваем установочный скрипт
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-    
-    # Проверяем установку
-    if ! command -v xray &> /dev/null; then
-        log_error "Xray не установлен"
-        exit 1
+assert_supported_os() {
+  local id ver major
+  IFS="|" read -r id ver < <(read_os_release)
+  major="${ver%%.*}"
+
+  case "$id" in
+    ubuntu)
+      [ "${major:-0}" -ge 22 ] || die "Требуется Ubuntu 22.04+"
+      ;;
+    debian)
+      [ "${major:-0}" -ge 10 ] || die "Требуется Debian 10+"
+      ;;
+    centos|rhel)
+      [ "${major:-0}" -ge 7 ] || die "Требуется CentOS/RHEL 7+"
+      ;;
+    *)
+      die "Неподдерживаемая ОС: ${id:-unknown} ${ver:-}"
+      ;;
+  esac
+}
+
+install_packages() {
+  local id
+  IFS="|" read -r id _ < <(read_os_release)
+  case "$id" in
+    ubuntu|debian)
+      need_cmd apt-get
+      apt-get update -y
+      apt-get install -y --no-install-recommends ca-certificates curl unzip python3 openssl adduser
+      ;;
+    centos|rhel)
+      need_cmd yum
+      yum install -y ca-certificates curl unzip python3 openssl shadow-utils || yum install -y ca-certificates curl unzip python openssl shadow-utils
+      ;;
+    *)
+      die "Неподдерживаемая ОС для установки пакетов: $id"
+      ;;
+  esac
+}
+
+ensure_xray_user() {
+  if id -u xray >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v adduser >/dev/null 2>&1; then
+    adduser --system --no-create-home --disabled-login --group --shell /usr/sbin/nologin xray >/dev/null 2>&1 || adduser --system --no-create-home --disabled-login xray >/dev/null 2>&1 || true
+  fi
+
+  if ! id -u xray >/dev/null 2>&1; then
+    if command -v useradd >/dev/null 2>&1; then
+      if command -v getent >/dev/null 2>&1 && command -v groupadd >/dev/null 2>&1; then
+        if ! getent group xray >/dev/null 2>&1; then
+          groupadd --system xray >/dev/null 2>&1 || groupadd -r xray >/dev/null 2>&1 || true
+        fi
+      fi
+      useradd --system --no-create-home --shell /usr/sbin/nologin xray >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin xray >/dev/null 2>&1 || true
     fi
-    
-    XRAY_VERSION=$(xray version 2>/dev/null | head -n 1)
-    log_success "Xray установлен: $XRAY_VERSION"
+  fi
+
+  id -u xray >/dev/null 2>&1 || die "Не удалось создать пользователя xray (нужны adduser или useradd)"
 }
 
-enable_bbr() {
-    log_info "Включение TCP BBR..."
-    
-    if lsmod | grep -q bbr; then
-        log_warning "BBR уже включен"
-        return
-    fi
-    
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1
-    
-    log_success "BBR включен"
+ensure_tls_certificate() {
+  local domain="$1"
+  local cert_path="$2"
+  local key_path="$3"
+
+  if [ -n "${XPAD_TLS_CERT:-}" ] && [ -n "${XPAD_TLS_KEY:-}" ]; then
+    [ -f "$XPAD_TLS_CERT" ] || die "XPAD_TLS_CERT не найден: $XPAD_TLS_CERT"
+    [ -f "$XPAD_TLS_KEY" ] || die "XPAD_TLS_KEY не найден: $XPAD_TLS_KEY"
+    install -d "$(dirname -- "$cert_path")"
+    install -m 644 "$XPAD_TLS_CERT" "$cert_path"
+    install -m 640 "$XPAD_TLS_KEY" "$key_path"
+    chown root:xray "$cert_path" "$key_path" >/dev/null 2>&1 || true
+    chmod 644 "$cert_path" >/dev/null 2>&1 || true
+    chmod 640 "$key_path" >/dev/null 2>&1 || true
+    echo "$cert_path|$key_path"
+    return 0
+  fi
+
+  need_cmd openssl
+
+  if [ -s "$cert_path" ] && [ -s "$key_path" ]; then
+    echo "$cert_path|$key_path"
+    return 0
+  fi
+
+  install -d "$(dirname -- "$cert_path")"
+
+  local tmp_cert tmp_key
+  tmp_cert="$(mktemp)"
+  tmp_key="$(mktemp)"
+
+  umask 077
+  openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=$domain" -keyout "$tmp_key" -out "$tmp_cert" >/dev/null 2>&1 || die "Не удалось сгенерировать TLS сертификат через openssl"
+
+  install -m 644 "$tmp_cert" "$cert_path"
+  install -m 640 "$tmp_key" "$key_path"
+  chown root:xray "$cert_path" "$key_path" >/dev/null 2>&1 || true
+  rm -f "$tmp_cert" "$tmp_key"
+
+  echo "$cert_path|$key_path"
 }
 
-# ========================================
-# Генерация ключей и UUID
-# ========================================
+ensure_repo_assets() {
+  if [ -f "$SCRIPT_DIR/generator/xpad.py" ] && [ -d "$SCRIPT_DIR/profiles" ] && [ -d "$SCRIPT_DIR/templates" ]; then
+    return 0
+  fi
 
-generate_uuid() {
-    if command -v uuidgen &> /dev/null; then
-        uuidgen
-    else
-        cat /proc/sys/kernel/random/uuid
-    fi
+  local ref repo url tmp work extracted dst
+  ref="${XPAD_REF:-test1}"
+  repo="${XPAD_REPO:-Nerve11/xray-protocols-auto-deploy}"
+  url="https://github.com/${repo}/archive/refs/heads/${ref}.zip"
+
+  tmp="$(mktemp -d)"
+  work="$tmp/repo.zip"
+
+  need_cmd curl
+  need_cmd unzip
+
+  echo "Не найден локальный репозиторий (generator/profiles/templates). Скачиваю ${repo}@${ref}..."
+  curl -fsSL "$url" -o "$work" || die "Не удалось скачать репозиторий: $url"
+  unzip -q "$work" -d "$tmp" || die "Не удалось распаковать архив репозитория"
+
+  extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [ -n "${extracted:-}" ] || die "Не удалось найти распакованную директорию репозитория"
+
+  dst="/usr/local/lib/xpad/${repo##*/}"
+  rm -rf "$dst"
+  install -d "$dst"
+  cp -a "$extracted"/. "$dst"/
+
+  SCRIPT_DIR="$dst"
+  rm -rf "$tmp"
 }
 
-generate_reality_keys() {
-    xray x25519
+install_xray_core() (
+  set -euo pipefail
+
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+
+  need_cmd curl
+  curl -fsSL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
+  chmod 700 "$tmp/install-release.sh"
+  bash "$tmp/install-release.sh"
+
+  if ! command -v xray >/dev/null 2>&1; then
+    die "Xray установлен, но команда xray не найдена в PATH"
+  fi
+)
+
+choose_profile_interactive() {
+  local profiles_json choice resolved
+
+  profiles_json="$(python3 "$SCRIPT_DIR/generator/xpad.py" list-profiles 2>/dev/null || true)"
+  PROFILES_JSON="$profiles_json" python3 - <<'PY' >&2 || die "Профили не найдены. Проверьте директорию profiles/."
+import json
+import os
+
+raw = os.environ.get("PROFILES_JSON", "").strip()
+profiles = json.loads(raw) if raw else []
+if not isinstance(profiles, list) or not profiles:
+    raise SystemExit(2)
+
+for i, p in enumerate(profiles, 1):
+    pid = p.get("id", "")
+    proto = p.get("protocol", "")
+    transport = p.get("transport", "")
+    sec = p.get("security", "none")
+    print(f"{i}) {pid}  protocol={proto} transport={transport} security={sec}")
+PY
+
+  echo >&2
+  read -r -p "Введите id профиля или номер из списка: " choice
+  choice="${choice:-}"
+
+  resolved="$(PROFILES_JSON="$profiles_json" CHOICE="$choice" python3 - <<'PY'
+import json
+import os
+import sys
+
+choice = (os.environ.get("CHOICE") or "").strip()
+profiles = json.loads(os.environ.get("PROFILES_JSON") or "[]")
+ids = [p.get("id") for p in profiles if isinstance(p, dict)]
+
+if not choice:
+    sys.exit(2)
+
+if choice.isdigit():
+    idx = int(choice)
+    if 1 <= idx <= len(ids) and ids[idx - 1]:
+        print(ids[idx - 1])
+        sys.exit(0)
+    sys.exit(2)
+
+if choice in ids:
+    print(choice)
+    sys.exit(0)
+
+sys.exit(2)
+PY
+)" || die "Неизвестный профиль: $choice"
+
+  echo "$resolved"
 }
 
-generate_short_id() {
-    openssl rand -hex 8
+read_profile_meta() {
+  local profile="$1"
+  SCRIPT_DIR="$SCRIPT_DIR" PROFILE_ID="$profile" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+repo = Path(os.environ["SCRIPT_DIR"])
+profiles_dir = repo / "profiles"
+pid = os.environ["PROFILE_ID"]
+
+path = None
+for p in sorted(profiles_dir.glob("*.json")):
+  try:
+    obj = json.loads(p.read_text(encoding="utf-8"))
+  except Exception:
+    continue
+  if obj.get("id") == pid:
+    path = p
+    break
+
+if not path:
+  raise SystemExit(2)
+
+obj = json.loads(path.read_text(encoding="utf-8"))
+defaults = obj.get("defaults", {})
+print(json.dumps({
+  "id": obj.get("id"),
+  "protocol": obj.get("protocol"),
+  "transport": obj.get("transport"),
+  "security": obj.get("security", "none"),
+  "server_port": defaults.get("server_port", 443)
+}, ensure_ascii=False))
+PY
 }
 
-# ========================================
-# Пользовательский ввод
-# ========================================
+render_config() {
+  local profile="$1"
+  local out_dir="$2"
+  local params_file="$3"
 
-get_user_input() {
-    clear
-    echo "═══════════════════════════════════════════"
-    echo "  Xray VPN Auto Installer"
-    echo "═══════════════════════════════════════════"
-    echo ""
-    
-    # Протокол
-    echo "Выберите протокол:"
-    echo "1) VLESS"
-    echo "2) VLESS + Reality"
-    echo "3) VLESS + Reality + XHTTP"
-    read -p "Выбор [1-3]: " PROTOCOL_CHOICE
-    
-    case $PROTOCOL_CHOICE in
-        1) PROTOCOL="vless" ;;
-        2) PROTOCOL="vless-reality" ;;
-        3) PROTOCOL="vless-reality-xhttp" ;;
-        *) log_error "Неверный выбор"; exit 1 ;;
-    esac
-    
-    # UUID
-    DEFAULT_UUID=$(generate_uuid)
-    read -p "UUID клиента [$DEFAULT_UUID]: " USER_UUID
-    USER_UUID=${USER_UUID:-$DEFAULT_UUID}
-    
-    # Порт
-    read -p "Порт [443]: " PORT
-    PORT=${PORT:-443}
-    
-    # SNI (для Reality)
-    if [[ "$PROTOCOL" == *"reality"* ]]; then
-        echo ""
-        echo "Популярные SNI для Reality:"
-        echo "  - www.microsoft.com"
-        echo "  - www.apple.com"
-        echo "  - www.cloudflare.com"
-        echo "  - www.tesla.com"
-        read -p "Введите SNI [www.microsoft.com]: " SNI
-        SNI=${SNI:-www.microsoft.com}
-        
-        # Fingerprint
-        echo ""
-        echo "Выберите fingerprint:"
-        echo "1) chrome (рекомендуется)"
-        echo "2) firefox"
-        echo "3) safari"
-        echo "4) ios"
-        echo "5) android"
-        echo "6) edge"
-        echo "7) random"
-        read -p "Выбор [1-7]: " FP_CHOICE
-        
-        case $FP_CHOICE in
-            1) FINGERPRINT="chrome" ;;
-            2) FINGERPRINT="firefox" ;;
-            3) FINGERPRINT="safari" ;;
-            4) FINGERPRINT="ios" ;;
-            5) FINGERPRINT="android" ;;
-            6) FINGERPRINT="edge" ;;
-            7) FINGERPRINT="random" ;;
-            *) FINGERPRINT="chrome" ;;
-        esac
-        
-        # Генерация Reality ключей
-        log_info "Генерация Reality ключей..."
-        REALITY_KEYS=$(generate_reality_keys)
-        PRIVATE_KEY=$(echo "$REALITY_KEYS" | grep "Private key:" | awk '{print $3}')
-        PUBLIC_KEY=$(echo "$REALITY_KEYS" | grep "Public key:" | awk '{print $3}')
-        SHORT_ID=$(generate_short_id)
-        
-        log_success "Ключи сгенерированы"
-    fi
-    
-    # Path для XHTTP
-    if [[ "$PROTOCOL" == *"xhttp"* ]]; then
-        read -p "XHTTP путь [/]: " XHTTP_PATH
-        XHTTP_PATH=${XHTTP_PATH:-/}
-    fi
-    
-    # Email пользователя
-    read -p "Email пользователя (опционально): " USER_EMAIL
-    
-    echo ""
+  python3 "$SCRIPT_DIR/generator/xpad.py" render --profile "$profile" --params "$params_file" --out "$out_dir"
 }
 
-# ========================================
-# Создание конфигураций
-# ========================================
+write_systemd_service() {
+  local xray_bin="$1"
+  local config_path="$2"
 
-generate_vless_config() {
-    cat > /usr/local/etc/xray/config.json <<EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": $PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$USER_UUID",
-            "email": "${USER_EMAIL:-user@example.com}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "tls",
-        "tlsSettings": {
-          "certificates": [
-            {
-              "certificateFile": "/usr/local/etc/xray/cert.crt",
-              "keyFile": "/usr/local/etc/xray/cert.key"
-            }
-          ]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
+  need_cmd systemctl
 
-generate_vless_reality_config() {
-    cat > /usr/local/etc/xray/config.json <<EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": $PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$USER_UUID",
-            "flow": "xtls-rprx-vision",
-            "email": "${USER_EMAIL:-user@example.com}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "$SNI:443",
-          "xver": 0,
-          "serverNames": [
-            "$SNI"
-          ],
-          "privateKey": "$PRIVATE_KEY",
-          "shortIds": [
-            "$SHORT_ID",
-            ""
-          ]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
+  ensure_xray_user
 
-generate_vless_reality_xhttp_config() {
-    cat > /usr/local/etc/xray/config.json <<EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "port": $PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "$USER_UUID",
-            "flow": "",
-            "email": "${USER_EMAIL:-user@example.com}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "$SNI:443",
-          "xver": 0,
-          "serverNames": [
-            "$SNI"
-          ],
-          "privateKey": "$PRIVATE_KEY",
-          "shortIds": [
-            "$SHORT_ID",
-            ""
-          ]
-        },
-        "xhttpSettings": {
-          "path": "$XHTTP_PATH",
-          "host": "$SNI"
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
-  ]
-}
-EOF
-}
-
-# ========================================
-# Генерация клиентской ссылки
-# ========================================
-
-generate_client_link() {
-    SERVER_IP=$(curl -s ifconfig.me)
-    
-    case $PROTOCOL in
-        "vless")
-            LINK="vless://${USER_UUID}@${SERVER_IP}:${PORT}?encryption=none&security=tls&type=tcp#XrayVPN"
-            ;;
-        "vless-reality")
-            LINK="vless://${USER_UUID}@${SERVER_IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=${FINGERPRINT}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp#XrayReality"
-            ;;
-        "vless-reality-xhttp")
-            LINK="vless://${USER_UUID}@${SERVER_IP}:${PORT}?encryption=none&security=reality&sni=${SNI}&fp=${FINGERPRINT}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}&type=xhttp&path=${XHTTP_PATH}&host=${SNI}#XrayRealityXHTTP"
-            ;;
-    esac
-    
-    echo "$LINK"
-}
-
-save_client_info() {
-    local CLIENT_FILE="/root/xray_client_info.txt"
-    local LINK=$(generate_client_link)
-    
-    cat > $CLIENT_FILE <<EOF
-═══════════════════════════════════════════
-         Xray VPN - Информация о клиенте
-═══════════════════════════════════════════
-
-Протокол: $PROTOCOL
-Сервер: $(curl -s ifconfig.me)
-Порт: $PORT
-UUID: $USER_UUID
+  install -d /etc/systemd/system/xray.service.d
+  cat > /etc/systemd/system/xray.service.d/20-xpad.conf <<EOF
+[Service]
+User=xray
+Group=xray
+ExecStart=
+ExecStart=${xray_bin} run -config ${config_path}
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 EOF
 
-    if [[ "$PROTOCOL" == *"reality"* ]]; then
-        cat >> $CLIENT_FILE <<EOF
+  chown -R root:xray /usr/local/etc/xray >/dev/null 2>&1 || true
+  chmod 750 /usr/local/etc/xray >/dev/null 2>&1 || true
+  chmod 640 /usr/local/etc/xray/config.json >/dev/null 2>&1 || true
+  if [ -d /usr/local/etc/xpad/certs ]; then
+    chown -R root:xray /usr/local/etc/xpad/certs >/dev/null 2>&1 || true
+    chmod 750 /usr/local/etc/xpad/certs >/dev/null 2>&1 || true
+    find /usr/local/etc/xpad/certs -type f -name '*.key' -exec chmod 640 {} \; >/dev/null 2>&1 || true
+    find /usr/local/etc/xpad/certs -type f -name '*.crt' -exec chmod 644 {} \; >/dev/null 2>&1 || true
+  fi
 
---- Reality параметры ---
-SNI: $SNI
-Fingerprint: $FINGERPRINT
-Public Key: $PUBLIC_KEY
-Short ID: $SHORT_ID
-Private Key: $PRIVATE_KEY
-EOF
-    fi
-
-    if [[ "$PROTOCOL" == *"xhttp"* ]]; then
-        cat >> $CLIENT_FILE <<EOF
-
---- XHTTP параметры ---
-Path: $XHTTP_PATH
-Host: $SNI
-EOF
-    fi
-
-    cat >> $CLIENT_FILE <<EOF
-
-═══════════════════════════════════════════
-           Ссылка для подключения:
-═══════════════════════════════════════════
-
-$LINK
-
-═══════════════════════════════════════════
-           QR-код:
-═══════════════════════════════════════════
-
-EOF
-
-    # Генерация QR-кода в ASCII
-    echo "$LINK" | qrencode -t ANSIUTF8 >> $CLIENT_FILE
-    
-    echo ""
-    log_success "Информация сохранена в $CLIENT_FILE"
-    echo ""
-    cat $CLIENT_FILE
+  systemctl daemon-reload
+  systemctl enable xray.service
+  systemctl restart xray.service
 }
 
-# ========================================
-# Главная функция
-# ========================================
+write_json() {
+  local path="$1"
+  local content="$2"
+  install -d "$(dirname -- "$path")"
+  printf '%s\n' "$content" > "$path"
+}
 
 main() {
-    log_info "Запуск установки Xray VPN..."
-    echo ""
-    
-    # Установка компонентов
-    install_dependencies
-    install_xray
-    enable_bbr
-    
-    # Получение настроек от пользователя
-    get_user_input
-    
-    # Генерация конфигурации
-    log_info "Создание конфигурации..."
-    case $PROTOCOL in
-        "vless") generate_vless_config ;;
-        "vless-reality") generate_vless_reality_config ;;
-        "vless-reality-xhttp") generate_vless_reality_xhttp_config ;;
-    esac
-    log_success "Конфигурация создана"
-    
-    # Запуск и включение автозапуска
-    log_info "Запуск Xray..."
-    systemctl enable xray
-    systemctl restart xray
-    
-    if systemctl is-active --quiet xray; then
-        log_success "Xray запущен успешно"
-    else
-        log_error "Ошибка запуска Xray"
-        log_info "Проверьте логи: journalctl -u xray -n 50"
-        exit 1
+  is_root || die "Запустите install.sh от root"
+
+  assert_supported_os
+  install_packages
+  ensure_repo_assets
+  install_xray_core
+
+  local profile domain server_addr server_port fingerprint
+  profile="$(choose_profile_interactive)"
+  [ -n "$profile" ] || die "Пустой profile id"
+
+  local meta_json
+  meta_json="$(read_profile_meta "$profile" || true)"
+  [ -n "$meta_json" ] || die "Не удалось прочитать профиль: $profile"
+  local security default_port
+  security="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("security","none"))' <<<"$meta_json")"
+  default_port="$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read()).get("server_port",443))' <<<"$meta_json")"
+
+  read -r -p "Домен для маскировки (SNI/host): " domain
+  [ -n "$domain" ] || die "Пустой домен"
+
+  read -r -p "Адрес сервера для client.json (домен или IP) [по умолчанию: $domain]: " server_addr
+  server_addr="${server_addr:-$domain}"
+
+  read -r -p "Порт сервера [по умолчанию: $default_port]: " server_port
+  server_port="${server_port:-$default_port}"
+
+  read -r -p "Fingerprint (chrome/firefox/safari/ios/android/edge/random/randomized) [по умолчанию: chrome]: " fingerprint
+  fingerprint="${fingerprint:-chrome}"
+
+  local params_dir out_dir xray_dir
+  params_dir="/usr/local/etc/xpad"
+  out_dir="/usr/local/etc/xpad/out/$profile"
+  xray_dir="/usr/local/etc/xray"
+
+  local params_file
+  params_file="$params_dir/params.json"
+
+  local params_json
+  local tls_cert tls_key tls_allow_insecure reality_target reality_server_names reality_server_name
+
+  tls_cert=""
+  tls_key=""
+  tls_allow_insecure="0"
+  reality_target=""
+  reality_server_names=""
+  reality_server_name=""
+
+  if [ "$security" = "tls" ]; then
+    local cert_dir safe cert_path key_path pair
+    cert_dir="/usr/local/etc/xpad/certs"
+    safe="${domain//[^a-zA-Z0-9._-]/_}"
+    cert_path="$cert_dir/${safe}.crt"
+    key_path="$cert_dir/${safe}.key"
+    ensure_xray_user
+    pair="$(ensure_tls_certificate "$domain" "$cert_path" "$key_path")"
+    tls_cert="${pair%%|*}"
+    tls_key="${pair#*|}"
+    if [ -z "${XPAD_TLS_CERT:-}" ] || [ -z "${XPAD_TLS_KEY:-}" ]; then
+      tls_allow_insecure="1"
     fi
-    
-    # Настройка firewall
-    log_info "Настройка firewall..."
-    if command -v ufw &> /dev/null; then
-        ufw allow $PORT/tcp
-        ufw --force enable
-    elif command -v firewall-cmd &> /dev/null; then
-        firewall-cmd --permanent --add-port=$PORT/tcp
-        firewall-cmd --reload
-    fi
-    
-    # Сохранение информации о клиенте
-    save_client_info
-    
-    echo ""
-    log_success "═══════════════════════════════════════════"
-    log_success "  Установка завершена успешно!"
-    log_success "═══════════════════════════════════════════"
-    echo ""
-    log_info "Управление сервисом:"
-    echo "  Статус:      systemctl status xray"
-    echo "  Остановка:   systemctl stop xray"
-    echo "  Запуск:      systemctl start xray"
-    echo "  Перезапуск:  systemctl restart xray"
-    echo "  Логи:        journalctl -u xray -f"
-    echo ""
-    log_info "Конфигурация: /usr/local/etc/xray/config.json"
-    log_info "Информация о клиенте: /root/xray_client_info.txt"
-    echo ""
+    echo "TLS сертификат: $tls_cert"
+    echo "TLS ключ: $tls_key"
+  fi
+
+  if [ "$security" = "reality" ]; then
+    read -r -p "Reality target (dest) [по умолчанию: ${domain}:443]: " reality_target
+    reality_target="${reality_target:-${domain}:443}"
+    read -r -p "Reality serverNames (через запятую) [по умолчанию: ${domain}]: " reality_server_names
+    reality_server_names="${reality_server_names:-${domain}}"
+    read -r -p "Reality serverName для клиента [по умолчанию: ${domain}]: " reality_server_name
+    reality_server_name="${reality_server_name:-${domain}}"
+  fi
+
+  params_json="$(DOMAIN="$domain" SERVER_ADDR="$server_addr" SERVER_PORT="$server_port" FINGERPRINT="$fingerprint" TLS_CERT="$tls_cert" TLS_KEY="$tls_key" TLS_ALLOW_INSECURE="$tls_allow_insecure" REALITY_TARGET="$reality_target" REALITY_SERVER_NAMES="$reality_server_names" REALITY_SERVER_NAME="$reality_server_name" SECURITY="$security" python3 - <<'PY'
+import json
+import os
+
+params = {
+  "domain": os.environ["DOMAIN"],
+  "server_addr": os.environ["SERVER_ADDR"],
+  "server_port": int(os.environ["SERVER_PORT"]),
+  "fingerprint": os.environ["FINGERPRINT"],
+  "serverName": os.environ["DOMAIN"],
 }
 
-# Запуск
-main
+if os.environ.get("SECURITY") == "tls":
+  params["tls_certificateFile"] = os.environ["TLS_CERT"]
+  params["tls_keyFile"] = os.environ["TLS_KEY"]
+  params["tls_allowInsecure"] = os.environ.get("TLS_ALLOW_INSECURE", "0") == "1"
+
+if os.environ.get("SECURITY") == "reality":
+  params["reality_target"] = os.environ["REALITY_TARGET"]
+  params["reality_serverNames"] = [x.strip() for x in os.environ["REALITY_SERVER_NAMES"].split(",") if x.strip()]
+  params["reality_serverName"] = os.environ["REALITY_SERVER_NAME"]
+
+print(json.dumps(params, ensure_ascii=False, indent=2))
+PY
+)"
+  write_json "$params_file" "$params_json"
+
+  render_config "$profile" "$out_dir" "$params_file"
+
+  install -d "$xray_dir"
+  install -m 644 "$out_dir/server.json" "$xray_dir/config.json"
+  install -m 600 "$out_dir/client.json" "$xray_dir/client.json"
+  install -m 600 "$out_dir/params.effective.json" "$xray_dir/params.effective.json"
+
+  xray -test -c "$xray_dir/config.json"
+
+  local xray_bin
+  xray_bin="$(command -v xray)"
+  write_systemd_service "$xray_bin" "$xray_dir/config.json"
+
+  echo "Установка завершена"
+  echo "Server config: $xray_dir/config.json"
+  echo "Client config: $xray_dir/client.json"
+
+  local share_json share_link
+  share_json="$(python3 "$SCRIPT_DIR/generator/xpad.py" share --profile "$profile" --params "$xray_dir/params.effective.json" 2>/dev/null || true)"
+  share_link="$(SHARE_JSON="$share_json" python3 - <<'PY'
+import json
+import os
+
+raw = os.environ.get("SHARE_JSON", "").strip()
+try:
+  obj = json.loads(raw) if raw else {}
+except Exception:
+  obj = {}
+
+if isinstance(obj, dict) and obj.get("ok") and obj.get("link"):
+  print(obj["link"])
+PY
+)"
+  if [ -n "$share_link" ]; then
+    echo "Link: $share_link"
+    printf '%s\n' "profile=$profile" "server=$server_addr:$server_port" "link=$share_link" "client_json=$xray_dir/client.json" > /root/xray_client_info.txt
+    chmod 600 /root/xray_client_info.txt >/dev/null 2>&1 || true
+    echo "Saved: /root/xray_client_info.txt"
+  fi
+}
+
+main "$@"

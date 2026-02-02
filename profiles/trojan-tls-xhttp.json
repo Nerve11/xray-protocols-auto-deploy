@@ -1,0 +1,10 @@
+{
+  "id": "trojan-tls-xhttp",
+  "protocol": "trojan",
+  "transport": "xhttp",
+  "security": "tls",
+  "defaults": {
+    "server_port": 443
+  }
+}
+

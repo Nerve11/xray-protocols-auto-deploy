@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v journalctl >/dev/null 2>&1; then
+  exec journalctl -fu xray.service --no-pager
+fi
+
+LOG_DIR="${LOG_DIR:-/var/log/xray}"
+ERROR_LOG="${ERROR_LOG:-$LOG_DIR/error.log}"
+ACCESS_LOG="${ACCESS_LOG:-$LOG_DIR/access.log}"
+
+files=()
+[ -f "$ERROR_LOG" ] && files+=("$ERROR_LOG")
+[ -f "$ACCESS_LOG" ] && files+=("$ACCESS_LOG")
+
+if [ "${#files[@]}" -eq 0 ]; then
+  echo "Логи не найдены (journalctl отсутствует, файловые логи не обнаружены)" >&2
+  exit 2
+fi
+
+exec tail -n 200 -F "${files[@]}"
+

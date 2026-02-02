@@ -1,0 +1,11 @@
+{
+  "id": "vless-vision-reality-raw",
+  "protocol": "vless",
+  "transport": "raw",
+  "security": "reality",
+  "defaults": {
+    "server_port": 443,
+    "flow": "xtls-rprx-vision"
+  }
+}
+

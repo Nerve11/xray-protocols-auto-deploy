@@ -1,0 +1,10 @@
+{
+  "id": "trojan-tls-kcp",
+  "protocol": "trojan",
+  "transport": "kcp",
+  "security": "tls",
+  "defaults": {
+    "server_port": 30000
+  }
+}
+
