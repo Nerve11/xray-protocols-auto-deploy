@@ -1,4 +1,5 @@
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -290,6 +291,118 @@ def render(profile_id: str, params_path: Path, out_dir: Path) -> None:
     _write_json(out_dir / "params.effective.json", params)
 
 
+def _qs(params: Dict[str, Any]) -> str:
+    parts = []
+    for k, v in params.items():
+        if v is None:
+            continue
+        if isinstance(v, bool):
+            v = "1" if v else "0"
+        else:
+            v = str(v)
+        parts.append((k, v))
+    from urllib.parse import quote
+
+    return "&".join([f"{quote(k, safe='')}={quote(v, safe='')}" for k, v in parts])
+
+
+def share(profile_id: str, params_path: Path) -> Dict[str, Any]:
+    profile = _get_profile(profile_id)
+    params = _read_json(params_path)
+
+    protocol = profile["protocol"]
+    transport = profile["transport"]
+    security = profile.get("security", "none")
+
+    server_addr = params.get("server_addr") or params.get("serverName") or params.get("domain") or ""
+    server_port = int(params.get("server_port") or profile.get("defaults", {}).get("server_port", 443))
+
+    if protocol == "trojan":
+        password = params.get("trojan_password") or ""
+        if not (server_addr and password):
+            return {"ok": False, "error": "Недостаточно данных для trojan:// ссылки"}
+
+        q = {"type": transport}
+        if security == "tls":
+            q["security"] = "tls"
+            q["sni"] = params.get("serverName") or params.get("domain") or ""
+            q["fp"] = params.get("fingerprint") or "chrome"
+            if params.get("tls_allowInsecure"):
+                q["allowInsecure"] = True
+
+        if transport == "grpc":
+            q["serviceName"] = params.get("grpc_serviceName") or profile.get("defaults", {}).get("grpc_serviceName", "grpc")
+            q["mode"] = "multi" if bool(params.get("grpc_multiMode") or profile.get("defaults", {}).get("grpc_multiMode", False)) else "gun"
+        if transport == "ws":
+            q["path"] = params.get("ws_path") or profile.get("defaults", {}).get("ws_path", "/")
+            q["host"] = params.get("ws_host") or params.get("domain") or ""
+
+        link = f"trojan://{password}@{server_addr}:{server_port}?{_qs(q)}#{profile_id}"
+        return {"ok": True, "link": link, "profile": profile_id}
+
+    if protocol == "vless":
+        user_id = params.get("uuid") or ""
+        if not (server_addr and user_id):
+            return {"ok": False, "error": "Недостаточно данных для vless:// ссылки"}
+
+        q = {"encryption": "none", "type": transport}
+        flow = params.get("flow") or profile.get("defaults", {}).get("flow")
+        if flow:
+            q["flow"] = flow
+
+        if security == "tls":
+            q["security"] = "tls"
+            q["sni"] = params.get("serverName") or params.get("domain") or ""
+            q["fp"] = params.get("fingerprint") or "chrome"
+            if params.get("tls_allowInsecure"):
+                q["allowInsecure"] = True
+
+        if security == "reality":
+            q["security"] = "reality"
+            q["sni"] = params.get("reality_serverName") or params.get("domain") or ""
+            q["fp"] = params.get("reality_fingerprint") or params.get("fingerprint") or "chrome"
+            q["pbk"] = params.get("reality_password") or ""
+            q["sid"] = params.get("reality_shortId") or ""
+
+        if transport == "grpc":
+            q["serviceName"] = params.get("grpc_serviceName") or profile.get("defaults", {}).get("grpc_serviceName", "grpc")
+            q["mode"] = "multi" if bool(params.get("grpc_multiMode") or profile.get("defaults", {}).get("grpc_multiMode", False)) else "gun"
+        if transport == "ws":
+            q["path"] = params.get("ws_path") or profile.get("defaults", {}).get("ws_path", "/")
+            q["host"] = params.get("ws_host") or params.get("domain") or ""
+
+        link = f"vless://{user_id}@{server_addr}:{server_port}?{_qs(q)}#{profile_id}"
+        return {"ok": True, "link": link, "profile": profile_id}
+
+    if protocol == "vmess":
+        user_id = params.get("uuid") or ""
+        if not (server_addr and user_id):
+            return {"ok": False, "error": "Недостаточно данных для vmess:// ссылки"}
+        if security != "none":
+            return {"ok": False, "error": f"vmess:// ссылка не поддерживает security={security} в этом генераторе"}
+
+        vmess_obj = {
+            "v": "2",
+            "ps": profile_id,
+            "add": server_addr,
+            "port": str(server_port),
+            "id": user_id,
+            "aid": "0",
+            "scy": "auto",
+            "net": transport,
+            "type": "none",
+            "host": params.get("ws_host") or "",
+            "path": params.get("ws_path") or "",
+            "tls": "",
+            "sni": params.get("serverName") or "",
+        }
+        raw = json.dumps(vmess_obj, ensure_ascii=False).encode("utf-8")
+        link = "vmess://" + base64.b64encode(raw).decode("ascii")
+        return {"ok": True, "link": link, "profile": profile_id}
+
+    return {"ok": False, "error": f"Ссылка не поддерживается для protocol={protocol}"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="xpad")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -300,6 +413,10 @@ def main() -> int:
     rp.add_argument("--profile", required=True)
     rp.add_argument("--params", required=True)
     rp.add_argument("--out", required=True)
+
+    sp = sub.add_parser("share")
+    sp.add_argument("--profile", required=True)
+    sp.add_argument("--params", required=True)
 
     args = ap.parse_args()
 
@@ -315,6 +432,11 @@ def main() -> int:
         except ProfileError as e:
             print(str(e))
             return 2
+
+    if args.cmd == "share":
+        out = share(args.profile, Path(args.params))
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
 
     return 1
 
