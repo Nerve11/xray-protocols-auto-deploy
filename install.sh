@@ -65,6 +65,22 @@ install_packages() {
   esac
 }
 
+ensure_xray_user() {
+  if id -u xray >/dev/null 2>&1; then
+    return 0
+  fi
+
+  need_cmd useradd
+
+  if command -v getent >/dev/null 2>&1; then
+    if ! getent group xray >/dev/null 2>&1; then
+      groupadd --system xray >/dev/null 2>&1 || groupadd -r xray >/dev/null 2>&1 || true
+    fi
+  fi
+
+  useradd --system --no-create-home --shell /usr/sbin/nologin xray >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin xray >/dev/null 2>&1 || die "Не удалось создать пользователя xray"
+}
+
 ensure_tls_certificate() {
   local domain="$1"
   local cert_path="$2"
@@ -73,7 +89,13 @@ ensure_tls_certificate() {
   if [ -n "${XPAD_TLS_CERT:-}" ] && [ -n "${XPAD_TLS_KEY:-}" ]; then
     [ -f "$XPAD_TLS_CERT" ] || die "XPAD_TLS_CERT не найден: $XPAD_TLS_CERT"
     [ -f "$XPAD_TLS_KEY" ] || die "XPAD_TLS_KEY не найден: $XPAD_TLS_KEY"
-    echo "$XPAD_TLS_CERT|$XPAD_TLS_KEY"
+    install -d "$(dirname -- "$cert_path")"
+    install -m 644 "$XPAD_TLS_CERT" "$cert_path"
+    install -m 640 "$XPAD_TLS_KEY" "$key_path"
+    chown root:xray "$cert_path" "$key_path" >/dev/null 2>&1 || true
+    chmod 644 "$cert_path" >/dev/null 2>&1 || true
+    chmod 640 "$key_path" >/dev/null 2>&1 || true
+    echo "$cert_path|$key_path"
     return 0
   fi
 
@@ -94,7 +116,8 @@ ensure_tls_certificate() {
   openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=$domain" -keyout "$tmp_key" -out "$tmp_cert" >/dev/null 2>&1 || die "Не удалось сгенерировать TLS сертификат через openssl"
 
   install -m 644 "$tmp_cert" "$cert_path"
-  install -m 600 "$tmp_key" "$key_path"
+  install -m 640 "$tmp_key" "$key_path"
+  chown root:xray "$cert_path" "$key_path" >/dev/null 2>&1 || true
   rm -f "$tmp_cert" "$tmp_key"
 
   echo "$cert_path|$key_path"
@@ -254,20 +277,32 @@ write_systemd_service() {
 
   need_cmd systemctl
 
-  cat > /etc/systemd/system/xray.service <<EOF
-[Unit]
-Description=Xray Service
-After=network.target nss-lookup.target
+  ensure_xray_user
 
+  install -d /etc/systemd/system/xray.service.d
+  cat > /etc/systemd/system/xray.service.d/20-xpad.conf <<EOF
 [Service]
-ExecStart=${xray_bin} run -c ${config_path}
+User=xray
+Group=xray
+ExecStart=
+ExecStart=${xray_bin} run -config ${config_path}
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
 EOF
+
+  chown -R root:xray /usr/local/etc/xray >/dev/null 2>&1 || true
+  chmod 750 /usr/local/etc/xray >/dev/null 2>&1 || true
+  chmod 640 /usr/local/etc/xray/config.json >/dev/null 2>&1 || true
+  if [ -d /usr/local/etc/xpad/certs ]; then
+    chown -R root:xray /usr/local/etc/xpad/certs >/dev/null 2>&1 || true
+    chmod 750 /usr/local/etc/xpad/certs >/dev/null 2>&1 || true
+    find /usr/local/etc/xpad/certs -type f -name '*.key' -exec chmod 640 {} \; >/dev/null 2>&1 || true
+    find /usr/local/etc/xpad/certs -type f -name '*.crt' -exec chmod 644 {} \; >/dev/null 2>&1 || true
+  fi
 
   systemctl daemon-reload
   systemctl enable xray.service
@@ -336,6 +371,7 @@ main() {
     safe="${domain//[^a-zA-Z0-9._-]/_}"
     cert_path="$cert_dir/${safe}.crt"
     key_path="$cert_dir/${safe}.key"
+    ensure_xray_user
     pair="$(ensure_tls_certificate "$domain" "$cert_path" "$key_path")"
     tls_cert="${pair%%|*}"
     tls_key="${pair#*|}"
