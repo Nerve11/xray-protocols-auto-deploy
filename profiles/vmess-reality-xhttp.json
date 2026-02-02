@@ -1,0 +1,10 @@
+{
+  "id": "vmess-reality-xhttp",
+  "protocol": "vmess",
+  "transport": "xhttp",
+  "security": "reality",
+  "defaults": {
+    "server_port": 443
+  }
+}
+

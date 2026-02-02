@@ -1,0 +1,12 @@
+{
+  "id": "trojan-tls-grpc",
+  "protocol": "trojan",
+  "transport": "grpc",
+  "security": "tls",
+  "defaults": {
+    "server_port": 443,
+    "grpc_serviceName": "grpc",
+    "grpc_multiMode": false
+  }
+}
+

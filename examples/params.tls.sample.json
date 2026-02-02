@@ -1,0 +1,10 @@
+{
+  "server_addr": "example.com",
+  "domain": "example.com",
+  "server_port": 443,
+  "fingerprint": "chrome",
+  "serverName": "example.com",
+  "tls_certificateFile": "/etc/ssl/private/fullchain.crt",
+  "tls_keyFile": "/etc/ssl/private/crt.key"
+}
+

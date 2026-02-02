@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-run}"
+shift || true
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Не найдено в PATH: $1"
+}
+
+asset_dir="${XRAY_LOCATION_ASSET:-/usr/local/share/xray}"
+repo="Loyalsoldier/v2ray-rules-dat"
+
+download_latest() {
+  local tmp json geoip_url geosite_url
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  need_cmd curl
+  need_cmd python3
+
+  json="$(curl -fsSL "https://api.github.com/repos/${repo}/releases/latest")"
+
+  geoip_url="$(python3 - <<'PY' <<<"$json"
+import json,sys
+obj=json.loads(sys.stdin.read())
+for a in obj.get("assets",[]):
+  if a.get("name")=="geoip.dat":
+    print(a.get("browser_download_url",""))
+    break
+PY
+)"
+  geosite_url="$(python3 - <<'PY' <<<"$json"
+import json,sys
+obj=json.loads(sys.stdin.read())
+for a in obj.get("assets",[]):
+  if a.get("name")=="geosite.dat":
+    print(a.get("browser_download_url",""))
+    break
+PY
+)"
+
+  [ -n "$geoip_url" ] || die "Не найден geoip.dat в latest release ${repo}"
+  [ -n "$geosite_url" ] || die "Не найден geosite.dat в latest release ${repo}"
+
+  curl -fsSL "$geoip_url" -o "$tmp/geoip.dat"
+  curl -fsSL "$geosite_url" -o "$tmp/geosite.dat"
+
+  install -d "$asset_dir"
+  install -m 644 "$tmp/geoip.dat" "$asset_dir/geoip.dat"
+  install -m 644 "$tmp/geosite.dat" "$asset_dir/geosite.dat"
+}
+
+restart_xray() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl restart xray.service || true
+  fi
+}
+
+enable_timer() {
+  [ "${EUID:-$(id -u)}" -eq 0 ] || die "Нужен root"
+  install -m 755 "$0" /usr/local/bin/xpad-geoip-update
+
+  cat > /etc/systemd/system/xpad-geoip-update.service <<EOF
+[Unit]
+Description=Update geoip.dat and geosite.dat for Xray
+
+[Service]
+Type=oneshot
+Environment=XRAY_LOCATION_ASSET=${asset_dir}
+ExecStart=/usr/local/bin/xpad-geoip-update run
+EOF
+
+  cat > /etc/systemd/system/xpad-geoip-update.timer <<EOF
+[Unit]
+Description=Daily update geoip/geosite for Xray
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now xpad-geoip-update.timer
+}
+
+disable_timer() {
+  [ "${EUID:-$(id -u)}" -eq 0 ] || die "Нужен root"
+  systemctl disable --now xpad-geoip-update.timer || true
+  rm -f /etc/systemd/system/xpad-geoip-update.timer /etc/systemd/system/xpad-geoip-update.service
+  systemctl daemon-reload
+}
+
+case "$cmd" in
+  run)
+    download_latest
+    restart_xray
+    ;;
+  enable-timer)
+    need_cmd systemctl
+    enable_timer
+    ;;
+  disable-timer)
+    need_cmd systemctl
+    disable_timer
+    ;;
+  *)
+    echo "Использование: geoip-update {run|enable-timer|disable-timer}" >&2
+    exit 2
+    ;;
+esac
+

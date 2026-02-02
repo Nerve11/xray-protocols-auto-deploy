@@ -1,0 +1,12 @@
+{
+  "id": "vmess-reality-grpc",
+  "protocol": "vmess",
+  "transport": "grpc",
+  "security": "reality",
+  "defaults": {
+    "server_port": 443,
+    "grpc_serviceName": "grpc",
+    "grpc_multiMode": false
+  }
+}
+

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 2
+}
+
+case "$cmd" in
+  enable)
+    [ "${EUID:-$(id -u)}" -eq 0 ] || die "Нужен root"
+    if ! grep -q '^net\.ipv4\.tcp_congestion_control=bbr$' /etc/sysctl.conf 2>/dev/null; then
+      printf '\nnet.ipv4.tcp_congestion_control=bbr\n' >> /etc/sysctl.conf
+    fi
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null
+    sysctl -p /etc/sysctl.conf >/dev/null || true
+    ;;
+  status)
+    sysctl net.ipv4.tcp_congestion_control || true
+    lsmod | grep -E '(^|_)bbr($|_)' || true
+    ;;
+  *)
+    echo "Использование: bbr {enable|status}" >&2
+    exit 2
+    ;;
+esac
+

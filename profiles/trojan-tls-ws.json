@@ -1,0 +1,11 @@
+{
+  "id": "trojan-tls-ws",
+  "protocol": "trojan",
+  "transport": "ws",
+  "security": "tls",
+  "defaults": {
+    "server_port": 443,
+    "ws_path": "/"
+  }
+}
+

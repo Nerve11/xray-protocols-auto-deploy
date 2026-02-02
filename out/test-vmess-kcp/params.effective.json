@@ -1,0 +1,12 @@
+{
+  "server_addr": "example.com",
+  "domain": "example.com",
+  "server_port": 443,
+  "fingerprint": "chrome",
+  "reality_target": "example.com:443",
+  "reality_serverNames": [
+    "example.com"
+  ],
+  "reality_serverName": "example.com",
+  "uuid": "afceb452-b090-44ac-9606-e4efae566e0d"
+}

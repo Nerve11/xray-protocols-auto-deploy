@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG_PATH="${CONFIG_PATH:-/usr/local/etc/xray/config.json}"
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Не найдено в PATH: $1"
+}
+
+need_cmd curl
+need_cmd xray
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsSL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
+chmod 700 "$tmp/install-release.sh"
+bash "$tmp/install-release.sh"
+
+xray -test -c "$CONFIG_PATH"
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl restart xray.service
+fi
+
+xray version
+

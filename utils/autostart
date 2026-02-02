@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cmd="${1:-}"
+shift || true
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl не найден" >&2
+  exit 2
+fi
+
+case "$cmd" in
+  enable)
+    systemctl enable xray.service
+    systemctl restart xray.service
+    ;;
+  disable)
+    systemctl disable xray.service
+    systemctl stop xray.service
+    ;;
+  status)
+    systemctl status xray.service --no-pager
+    ;;
+  *)
+    echo "Использование: autostart {enable|disable|status}" >&2
+    exit 2
+    ;;
+esac
+
