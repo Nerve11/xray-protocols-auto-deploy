@@ -53,16 +53,51 @@ install_packages() {
     ubuntu|debian)
       need_cmd apt-get
       apt-get update -y
-      apt-get install -y --no-install-recommends ca-certificates curl unzip python3
+      apt-get install -y --no-install-recommends ca-certificates curl unzip python3 openssl
       ;;
     centos|rhel)
       need_cmd yum
-      yum install -y ca-certificates curl unzip python3 || yum install -y ca-certificates curl unzip python
+      yum install -y ca-certificates curl unzip python3 openssl || yum install -y ca-certificates curl unzip python openssl
       ;;
     *)
       die "Неподдерживаемая ОС для установки пакетов: $id"
       ;;
   esac
+}
+
+ensure_tls_certificate() {
+  local domain="$1"
+  local cert_path="$2"
+  local key_path="$3"
+
+  if [ -n "${XPAD_TLS_CERT:-}" ] && [ -n "${XPAD_TLS_KEY:-}" ]; then
+    [ -f "$XPAD_TLS_CERT" ] || die "XPAD_TLS_CERT не найден: $XPAD_TLS_CERT"
+    [ -f "$XPAD_TLS_KEY" ] || die "XPAD_TLS_KEY не найден: $XPAD_TLS_KEY"
+    echo "$XPAD_TLS_CERT|$XPAD_TLS_KEY"
+    return 0
+  fi
+
+  need_cmd openssl
+
+  if [ -s "$cert_path" ] && [ -s "$key_path" ]; then
+    echo "$cert_path|$key_path"
+    return 0
+  fi
+
+  install -d "$(dirname -- "$cert_path")"
+
+  local tmp_cert tmp_key
+  tmp_cert="$(mktemp)"
+  tmp_key="$(mktemp)"
+
+  umask 077
+  openssl req -x509 -nodes -newkey rsa:2048 -days 3650 -subj "/CN=$domain" -keyout "$tmp_key" -out "$tmp_cert" >/dev/null 2>&1 || die "Не удалось сгенерировать TLS сертификат через openssl"
+
+  install -m 644 "$tmp_cert" "$cert_path"
+  install -m 600 "$tmp_key" "$key_path"
+  rm -f "$tmp_cert" "$tmp_key"
+
+  echo "$cert_path|$key_path"
 }
 
 ensure_repo_assets() {
@@ -284,19 +319,29 @@ main() {
   params_file="$params_dir/params.json"
 
   local params_json
-  local tls_cert tls_key reality_target reality_server_names reality_server_name
+  local tls_cert tls_key tls_allow_insecure reality_target reality_server_names reality_server_name
 
   tls_cert=""
   tls_key=""
+  tls_allow_insecure="0"
   reality_target=""
   reality_server_names=""
   reality_server_name=""
 
   if [ "$security" = "tls" ]; then
-    read -r -p "Путь к certificateFile: " tls_cert
-    [ -n "$tls_cert" ] || die "Пустой certificateFile"
-    read -r -p "Путь к keyFile: " tls_key
-    [ -n "$tls_key" ] || die "Пустой keyFile"
+    local cert_dir safe cert_path key_path pair
+    cert_dir="/usr/local/etc/xpad/certs"
+    safe="${domain//[^a-zA-Z0-9._-]/_}"
+    cert_path="$cert_dir/${safe}.crt"
+    key_path="$cert_dir/${safe}.key"
+    pair="$(ensure_tls_certificate "$domain" "$cert_path" "$key_path")"
+    tls_cert="${pair%%|*}"
+    tls_key="${pair#*|}"
+    if [ -z "${XPAD_TLS_CERT:-}" ] || [ -z "${XPAD_TLS_KEY:-}" ]; then
+      tls_allow_insecure="1"
+    fi
+    echo "TLS сертификат: $tls_cert"
+    echo "TLS ключ: $tls_key"
   fi
 
   if [ "$security" = "reality" ]; then
@@ -308,7 +353,7 @@ main() {
     reality_server_name="${reality_server_name:-${domain}}"
   fi
 
-  params_json="$(DOMAIN="$domain" SERVER_ADDR="$server_addr" SERVER_PORT="$server_port" FINGERPRINT="$fingerprint" TLS_CERT="$tls_cert" TLS_KEY="$tls_key" REALITY_TARGET="$reality_target" REALITY_SERVER_NAMES="$reality_server_names" REALITY_SERVER_NAME="$reality_server_name" SECURITY="$security" python3 - <<'PY'
+  params_json="$(DOMAIN="$domain" SERVER_ADDR="$server_addr" SERVER_PORT="$server_port" FINGERPRINT="$fingerprint" TLS_CERT="$tls_cert" TLS_KEY="$tls_key" TLS_ALLOW_INSECURE="$tls_allow_insecure" REALITY_TARGET="$reality_target" REALITY_SERVER_NAMES="$reality_server_names" REALITY_SERVER_NAME="$reality_server_name" SECURITY="$security" python3 - <<'PY'
 import json
 import os
 
@@ -323,6 +368,7 @@ params = {
 if os.environ.get("SECURITY") == "tls":
   params["tls_certificateFile"] = os.environ["TLS_CERT"]
   params["tls_keyFile"] = os.environ["TLS_KEY"]
+  params["tls_allowInsecure"] = os.environ.get("TLS_ALLOW_INSECURE", "0") == "1"
 
 if os.environ.get("SECURITY") == "reality":
   params["reality_target"] = os.environ["REALITY_TARGET"]
