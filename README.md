@@ -21,7 +21,7 @@ Debian 12 Is working correctly!
 Запуск в один шаг (рекомендуется):
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/Nerve11/xray-protocols-auto-deploy/test1/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/Nerve11/xray-protocols-auto-deploy/main/install.sh)
 ```
 
 Важно: не используйте обратные кавычки вокруг URL (`` `...` ``), иначе bash будет пытаться выполнить URL как команду.
