@@ -2,6 +2,10 @@
 
 Автоматическая установка и настройка Xray-core с генерацией конфигов под выбранные профили (VMess / Trojan / VLESS + транспорты XHTTP / mKCP / gRPC / WebSocket), включая REALITY и XTLS Vision Seed.
 
+---
+Debian 12 Is working correctly!
+---
+
 ## Состав
 
 - install.sh: установка, обновление и первичная настройка
