@@ -116,7 +116,7 @@ choose_profile_interactive() {
   local profiles_json choice resolved
 
   profiles_json="$(python3 "$SCRIPT_DIR/generator/xpad.py" list-profiles 2>/dev/null || true)"
-  PROFILES_JSON="$profiles_json" python3 - <<'PY' || die "Профили не найдены. Проверьте директорию profiles/."
+  PROFILES_JSON="$profiles_json" python3 - <<'PY' >&2 || die "Профили не найдены. Проверьте директорию profiles/."
 import json
 import os
 
@@ -133,7 +133,7 @@ for i, p in enumerate(profiles, 1):
     print(f"{i}) {pid}  protocol={proto} transport={transport} security={sec}")
 PY
 
-  echo
+  echo >&2
   read -r -p "Введите id профиля или номер из списка: " choice
   choice="${choice:-}"
 
