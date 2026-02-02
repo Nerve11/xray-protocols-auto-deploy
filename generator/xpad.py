@@ -177,7 +177,8 @@ def _stream_settings(profile: Dict[str, Any], params: Dict[str, Any], side: str)
     if security == "tls":
         fingerprint = _maybe(params, "fingerprint", profile.get("defaults", {}).get("fingerprint", "chrome"))
         server_name = _maybe(params, "serverName", _maybe(params, "domain", ""))
-        tls = {"allowInsecure": False, "serverName": server_name, "fingerprint": fingerprint}
+        allow_insecure = bool(_maybe(params, "tls_allowInsecure", False)) if side == "client" else False
+        tls = {"allowInsecure": allow_insecure, "serverName": server_name, "fingerprint": fingerprint}
         if side == "server":
             cert_file = _require_str(params, "tls_certificateFile")
             key_file = _require_str(params, "tls_keyFile")
