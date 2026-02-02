@@ -132,10 +132,12 @@ ensure_repo_assets() {
   rm -rf "$tmp"
 }
 
-install_xray_core() {
+install_xray_core() (
+  set -euo pipefail
+
   local tmp
   tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'rm -rf "$tmp"' EXIT
 
   need_cmd curl
   curl -fsSL "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" -o "$tmp/install-release.sh"
@@ -145,7 +147,7 @@ install_xray_core() {
   if ! command -v xray >/dev/null 2>&1; then
     die "Xray установлен, но команда xray не найдена в PATH"
   fi
-}
+)
 
 choose_profile_interactive() {
   local profiles_json choice resolved
