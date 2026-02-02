@@ -441,6 +441,29 @@ PY
   echo "Установка завершена"
   echo "Server config: $xray_dir/config.json"
   echo "Client config: $xray_dir/client.json"
+
+  local share_json share_link
+  share_json="$(python3 "$SCRIPT_DIR/generator/xpad.py" share --profile "$profile" --params "$xray_dir/params.effective.json" 2>/dev/null || true)"
+  share_link="$(SHARE_JSON="$share_json" python3 - <<'PY'
+import json
+import os
+
+raw = os.environ.get("SHARE_JSON", "").strip()
+try:
+  obj = json.loads(raw) if raw else {}
+except Exception:
+  obj = {}
+
+if isinstance(obj, dict) and obj.get("ok") and obj.get("link"):
+  print(obj["link"])
+PY
+)"
+  if [ -n "$share_link" ]; then
+    echo "Link: $share_link"
+    printf '%s\n' "profile=$profile" "server=$server_addr:$server_port" "link=$share_link" "client_json=$xray_dir/client.json" > /root/xray_client_info.txt
+    chmod 600 /root/xray_client_info.txt >/dev/null 2>&1 || true
+    echo "Saved: /root/xray_client_info.txt"
+  fi
 }
 
 main "$@"
