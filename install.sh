@@ -53,11 +53,11 @@ install_packages() {
     ubuntu|debian)
       need_cmd apt-get
       apt-get update -y
-      apt-get install -y --no-install-recommends ca-certificates curl unzip python3 openssl
+      apt-get install -y --no-install-recommends ca-certificates curl unzip python3 openssl adduser
       ;;
     centos|rhel)
       need_cmd yum
-      yum install -y ca-certificates curl unzip python3 openssl || yum install -y ca-certificates curl unzip python openssl
+      yum install -y ca-certificates curl unzip python3 openssl shadow-utils || yum install -y ca-certificates curl unzip python openssl shadow-utils
       ;;
     *)
       die "Неподдерживаемая ОС для установки пакетов: $id"
@@ -70,15 +70,22 @@ ensure_xray_user() {
     return 0
   fi
 
-  need_cmd useradd
+  if command -v adduser >/dev/null 2>&1; then
+    adduser --system --no-create-home --disabled-login --group --shell /usr/sbin/nologin xray >/dev/null 2>&1 || adduser --system --no-create-home --disabled-login xray >/dev/null 2>&1 || true
+  fi
 
-  if command -v getent >/dev/null 2>&1; then
-    if ! getent group xray >/dev/null 2>&1; then
-      groupadd --system xray >/dev/null 2>&1 || groupadd -r xray >/dev/null 2>&1 || true
+  if ! id -u xray >/dev/null 2>&1; then
+    if command -v useradd >/dev/null 2>&1; then
+      if command -v getent >/dev/null 2>&1 && command -v groupadd >/dev/null 2>&1; then
+        if ! getent group xray >/dev/null 2>&1; then
+          groupadd --system xray >/dev/null 2>&1 || groupadd -r xray >/dev/null 2>&1 || true
+        fi
+      fi
+      useradd --system --no-create-home --shell /usr/sbin/nologin xray >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin xray >/dev/null 2>&1 || true
     fi
   fi
 
-  useradd --system --no-create-home --shell /usr/sbin/nologin xray >/dev/null 2>&1 || useradd -r -M -s /usr/sbin/nologin xray >/dev/null 2>&1 || die "Не удалось создать пользователя xray"
+  id -u xray >/dev/null 2>&1 || die "Не удалось создать пользователя xray (нужны adduser или useradd)"
 }
 
 ensure_tls_certificate() {
