@@ -65,6 +65,38 @@ install_packages() {
   esac
 }
 
+ensure_repo_assets() {
+  if [ -f "$SCRIPT_DIR/generator/xpad.py" ] && [ -d "$SCRIPT_DIR/profiles" ] && [ -d "$SCRIPT_DIR/templates" ]; then
+    return 0
+  fi
+
+  local ref repo url tmp work extracted dst
+  ref="${XPAD_REF:-test1}"
+  repo="${XPAD_REPO:-Nerve11/xray-protocols-auto-deploy}"
+  url="https://github.com/${repo}/archive/refs/heads/${ref}.zip"
+
+  tmp="$(mktemp -d)"
+  work="$tmp/repo.zip"
+
+  need_cmd curl
+  need_cmd unzip
+
+  echo "Не найден локальный репозиторий (generator/profiles/templates). Скачиваю ${repo}@${ref}..."
+  curl -fsSL "$url" -o "$work" || die "Не удалось скачать репозиторий: $url"
+  unzip -q "$work" -d "$tmp" || die "Не удалось распаковать архив репозитория"
+
+  extracted="$(find "$tmp" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [ -n "${extracted:-}" ] || die "Не удалось найти распакованную директорию репозитория"
+
+  dst="/usr/local/lib/xpad/${repo##*/}"
+  rm -rf "$dst"
+  install -d "$dst"
+  cp -a "$extracted"/. "$dst"/
+
+  SCRIPT_DIR="$dst"
+  rm -rf "$tmp"
+}
+
 install_xray_core() {
   local tmp
   tmp="$(mktemp -d)"
@@ -81,10 +113,58 @@ install_xray_core() {
 }
 
 choose_profile_interactive() {
-  python3 "$SCRIPT_DIR/generator/xpad.py" list-profiles || true
+  local profiles_json choice resolved
+
+  profiles_json="$(python3 "$SCRIPT_DIR/generator/xpad.py" list-profiles 2>/dev/null || true)"
+  PROFILES_JSON="$profiles_json" python3 - <<'PY' || die "Профили не найдены. Проверьте директорию profiles/."
+import json
+import os
+
+raw = os.environ.get("PROFILES_JSON", "").strip()
+profiles = json.loads(raw) if raw else []
+if not isinstance(profiles, list) or not profiles:
+    raise SystemExit(2)
+
+for i, p in enumerate(profiles, 1):
+    pid = p.get("id", "")
+    proto = p.get("protocol", "")
+    transport = p.get("transport", "")
+    sec = p.get("security", "none")
+    print(f"{i}) {pid}  protocol={proto} transport={transport} security={sec}")
+PY
+
   echo
-  read -r -p "Введите id профиля: " profile
-  echo "$profile"
+  read -r -p "Введите id профиля или номер из списка: " choice
+  choice="${choice:-}"
+
+  resolved="$(PROFILES_JSON="$profiles_json" CHOICE="$choice" python3 - <<'PY'
+import json
+import os
+import sys
+
+choice = (os.environ.get("CHOICE") or "").strip()
+profiles = json.loads(os.environ.get("PROFILES_JSON") or "[]")
+ids = [p.get("id") for p in profiles if isinstance(p, dict)]
+
+if not choice:
+    sys.exit(2)
+
+if choice.isdigit():
+    idx = int(choice)
+    if 1 <= idx <= len(ids) and ids[idx - 1]:
+        print(ids[idx - 1])
+        sys.exit(0)
+    sys.exit(2)
+
+if choice in ids:
+    print(choice)
+    sys.exit(0)
+
+sys.exit(2)
+PY
+)" || die "Неизвестный профиль: $choice"
+
+  echo "$resolved"
 }
 
 read_profile_meta() {
@@ -96,9 +176,21 @@ from pathlib import Path
 
 repo = Path(os.environ["SCRIPT_DIR"])
 profiles_dir = repo / "profiles"
-path = profiles_dir / (os.environ["PROFILE_ID"] + ".json")
-if not path.exists():
+pid = os.environ["PROFILE_ID"]
+
+path = None
+for p in sorted(profiles_dir.glob("*.json")):
+  try:
+    obj = json.loads(p.read_text(encoding="utf-8"))
+  except Exception:
+    continue
+  if obj.get("id") == pid:
+    path = p
+    break
+
+if not path:
   raise SystemExit(2)
+
 obj = json.loads(path.read_text(encoding="utf-8"))
 defaults = obj.get("defaults", {})
 print(json.dumps({
@@ -157,6 +249,7 @@ main() {
 
   assert_supported_os
   install_packages
+  ensure_repo_assets
   install_xray_core
 
   local profile domain server_addr server_port fingerprint
