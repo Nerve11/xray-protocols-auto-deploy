@@ -47,3 +47,13 @@ bash install.sh
 export XPAD_TLS_CERT=/path/to/fullchain.pem
 export XPAD_TLS_KEY=/path/to/privkey.pem
 ```
+
+## Данные подключения
+
+После установки скрипт выводит ссылку для подключения (где это возможно) и сохраняет её в файл:
+
+- `/root/xray_client_info.txt`
+
+Также сохраняется конфигурация клиента:
+
+- `/usr/local/etc/xray/client.json`
