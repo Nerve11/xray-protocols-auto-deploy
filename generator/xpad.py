@@ -75,8 +75,20 @@ def _gen_uuid() -> str:
 
 
 def _gen_reality_keypair() -> Tuple[str, str]:
-    private_key = _run_xray(["x25519"]).splitlines()[-1].strip()
-    public_key = _run_xray(["x25519", "-i", private_key]).splitlines()[-1].strip()
+    output = _run_xray(["x25519"])
+    private_key = ""
+    public_key = ""
+    
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("Private key:"):
+            private_key = line.split(":", 1)[1].strip()
+        elif line.startswith("Public key:"):
+            public_key = line.split(":", 1)[1].strip()
+    
+    if not private_key or not public_key:
+        raise ProfileError("Не удалось извлечь ключи из вывода xray x25519")
+    
     return private_key, public_key
 
 
