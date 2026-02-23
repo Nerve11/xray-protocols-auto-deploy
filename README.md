@@ -30,7 +30,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/Nerve11/xray-protocols-auto-de
 
 ```bash
 apt-get update -y && apt-get install -y git
-git clone -b test1 https://github.com/Nerve11/xray-protocols-auto-deploy.git
+git clone -b main https://github.com/Nerve11/xray-protocols-auto-deploy.git
 cd xray-protocols-auto-deploy
 bash install.sh
 ```
